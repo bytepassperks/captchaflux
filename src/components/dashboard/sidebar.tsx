@@ -7,6 +7,7 @@ import {
   Key,
   BarChart3,
   Zap,
+  ShieldCheck,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -14,6 +15,7 @@ const sidebarLinks = [
   { href: "/dashboard", label: "Overview", icon: LayoutDashboard },
   { href: "/dashboard/api", label: "API Keys", icon: Key },
   { href: "/dashboard/benchmarks", label: "Benchmarks", icon: BarChart3 },
+  { href: "/dashboard/verify", label: "Verify Site", icon: ShieldCheck },
 ];
 
 export function Sidebar() {

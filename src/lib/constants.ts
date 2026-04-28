@@ -143,3 +143,13 @@ export const FAQ_ITEMS = [
       "The continuous benchmark scheduler tests captcha detection and solving against rotating demo endpoints every 6 hours. Results are stored in a rolling 7-day history with per-engine statistics, accessible via the /benchmark/* API endpoints.",
   },
 ] as const;
+
+export const ALLOWED_TEST_DOMAINS = [
+  "www.google.com",
+  "accounts.hcaptcha.com",
+  "demo.turnstile.workers.dev",
+  "recaptcha-demo.appspot.com",
+  ...(process.env.NEXT_PUBLIC_ALLOWED_DOMAINS
+    ? process.env.NEXT_PUBLIC_ALLOWED_DOMAINS.split(",").map((d) => d.trim())
+    : []),
+];
