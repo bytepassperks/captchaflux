@@ -149,6 +149,8 @@ export const ALLOWED_TEST_DOMAINS = [
   "accounts.hcaptcha.com",
   "demo.turnstile.workers.dev",
   "recaptcha-demo.appspot.com",
+  "textshift.org",
+  "www.textshift.org",
   ...(process.env.NEXT_PUBLIC_ALLOWED_DOMAINS
     ? process.env.NEXT_PUBLIC_ALLOWED_DOMAINS.split(",").map((d) => d.trim())
     : []),
