@@ -22,6 +22,8 @@ interface VerifyResult {
   engine_selected: string | null;
   fallback_chain: string[];
   solve_attempted: boolean;
+  solve_success: boolean;
+  token: string | null;
   latency_ms: number;
   confidence_score: number;
   error?: string;
@@ -109,8 +111,7 @@ export default function VerifySitePage() {
           </button>
         </div>
         <p className="mt-2 text-xs text-muted-foreground">
-          Only domains in the allowlist can be tested. Demo captcha sites are
-          pre-approved.
+          Enter any URL with a captcha. Supports reCAPTCHA, hCaptcha, Turnstile, MTCaptcha, and text/image captchas.
         </p>
       </form>
 
@@ -150,7 +151,7 @@ export default function VerifySitePage() {
             </p>
           </div>
           <div className="space-y-3">
-            {["Fetching page HTML…", "Detecting captcha type…", "Attempting engine racing solve…"].map(
+            {["Rendering page with browser pool…", "Detecting captcha type (JS + iframe scan)…", "Attempting solve via engine racing…", "Extracting token…"].map(
               (step, i) => (
                 <div key={i} className="flex items-center gap-2 text-sm text-muted-foreground">
                   <div className="h-1.5 w-1.5 rounded-full bg-primary/40 animate-pulse" />
@@ -260,6 +261,14 @@ export default function VerifySitePage() {
                   {
                     label: "Solve Attempted",
                     value: result.solve_attempted ? "Yes" : "No",
+                  },
+                  {
+                    label: "Solve Success",
+                    value: result.solve_success ? "Yes" : "No",
+                  },
+                  {
+                    label: "Token",
+                    value: result.token ? result.token.substring(0, 40) + (result.token.length > 40 ? "…" : "") : "—",
                   },
                   {
                     label: "Engine Selected",

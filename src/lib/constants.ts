@@ -115,7 +115,7 @@ export const FAQ_ITEMS = [
   {
     question: "What captcha types does CaptchaFlux support?",
     answer:
-      "CaptchaFlux detects and processes reCAPTCHA v2/v3, hCaptcha, Cloudflare Turnstile, and text/image captchas through five specialized engines: OCR, Vision (YOLOv8), Audio (Whisper), Token Harvest, and Behavior Simulation.",
+      "CaptchaFlux detects and processes reCAPTCHA v2/v3, hCaptcha, Cloudflare Turnstile, MTCaptcha, and text/image captchas through five specialized engines: OCR, Vision (YOLOv8), Audio (Whisper), Token Harvest, and Behavior Simulation. JS-rendered captchas like MTCaptcha are fully supported via browser pool rendering.",
   },
   {
     question: "How does engine racing work?",

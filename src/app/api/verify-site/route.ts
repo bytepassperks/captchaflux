@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { API_BASE_URL, ALLOWED_TEST_DOMAINS } from "@/lib/constants";
+import { API_BASE_URL } from "@/lib/constants";
 
 interface VerifyResult {
   captcha_detected: boolean;
@@ -8,21 +8,11 @@ interface VerifyResult {
   engine_selected: string | null;
   fallback_chain: string[];
   solve_attempted: boolean;
+  solve_success: boolean;
+  token: string | null;
   latency_ms: number;
   confidence_score: number;
   error?: string;
-}
-
-function isDomainAllowed(url: string): boolean {
-  try {
-    const parsed = new URL(url);
-    const domain = parsed.hostname;
-    return ALLOWED_TEST_DOMAINS.some(
-      (allowed) => domain === allowed || domain.endsWith("." + allowed)
-    );
-  } catch {
-    return false;
-  }
 }
 
 export async function POST(request: NextRequest) {
@@ -54,86 +44,42 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  if (!isDomainAllowed(url)) {
-    return Response.json(
-      {
-        error: `Domain not permitted. Add it to ALLOWED_TEST_DOMAINS or set NEXT_PUBLIC_ALLOWED_DOMAINS env var.`,
-        allowed_domains: ALLOWED_TEST_DOMAINS,
-      },
-      { status: 403 }
-    );
-  }
-
-  const result: VerifyResult = {
-    captcha_detected: false,
-    captcha_type: null,
-    sitekey_present: false,
-    engine_selected: null,
-    fallback_chain: [],
-    solve_attempted: false,
-    latency_ms: 0,
-    confidence_score: 0,
-  };
-
-  const startTime = Date.now();
-
   try {
-    // Step 1: Fetch page HTML
-    const pageResp = await fetch(url, {
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0",
-      },
-      signal: AbortSignal.timeout(15000),
-    });
-    const html = await pageResp.text();
-
-    // Step 2: Detect captcha via captcha-solver-core
-    const detectResp = await fetch(`${API_BASE_URL}/detect`, {
+    // Proxy to captcha-solver-core's /verify-site which uses browser pool
+    // for full JS rendering (handles MTCaptcha, reCAPTCHA, hCaptcha, Turnstile, etc.)
+    const resp = await fetch(`${API_BASE_URL}/verify-site`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ html, url }),
-      signal: AbortSignal.timeout(10000),
+      body: JSON.stringify({ url }),
+      signal: AbortSignal.timeout(90000),
     });
-    const detection = await detectResp.json();
 
-    result.captcha_type = detection.captcha_type || null;
-    result.captcha_detected =
-      !!detection.captcha_type && detection.captcha_type !== "none";
-    result.sitekey_present = !!detection.sitekey;
-    result.confidence_score = detection.confidence || 0;
-
-    if (!result.captcha_detected) {
-      result.latency_ms = Date.now() - startTime;
-      return Response.json(result);
+    if (!resp.ok) {
+      const errBody = await resp.text();
+      return Response.json(
+        { error: `Solver service error: ${resp.status} ${errBody}` },
+        { status: resp.status }
+      );
     }
 
-    // Step 3: Attempt solve via engine racing
-    result.solve_attempted = true;
-    const solveResp = await fetch(`${API_BASE_URL}/solve`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        captcha_type: detection.captcha_type,
-        pageurl: url,
-        sitekey: detection.sitekey,
-      }),
-      signal: AbortSignal.timeout(60000),
-    });
-    const solveResult = await solveResp.json();
-
-    result.engine_selected = solveResult.engine_used || null;
-    result.confidence_score = solveResult.confidence || result.confidence_score;
-    result.fallback_chain = solveResult.fallback_chain || [
-      solveResult.engine_used || "unknown",
-    ];
-    result.latency_ms = Date.now() - startTime;
-
+    const result: VerifyResult = await resp.json();
     return Response.json(result);
   } catch (err) {
-    result.latency_ms = Date.now() - startTime;
-    result.error =
-      err instanceof Error ? err.message : "Verification failed";
-    return Response.json(result, { status: 500 });
+    return Response.json(
+      {
+        captcha_detected: false,
+        captcha_type: null,
+        sitekey_present: false,
+        engine_selected: null,
+        fallback_chain: [],
+        solve_attempted: false,
+        solve_success: false,
+        token: null,
+        latency_ms: 0,
+        confidence_score: 0,
+        error: err instanceof Error ? err.message : "Verification failed",
+      },
+      { status: 500 }
+    );
   }
 }
