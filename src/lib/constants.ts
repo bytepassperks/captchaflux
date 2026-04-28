@@ -2,9 +2,15 @@ export const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_URL || "https://captcha-solver-core.onrender.com";
 
 export const DODO_CHECKOUT_LINKS = {
-  starter: process.env.NEXT_PUBLIC_DODO_STARTER || "#",
-  growth: process.env.NEXT_PUBLIC_DODO_GROWTH || "#",
-  pro: process.env.NEXT_PUBLIC_DODO_PRO || "#",
+  starter:
+    process.env.NEXT_PUBLIC_DODO_STARTER ||
+    "https://checkout.dodopayments.com/buy/pdt_0Ndi7QYWTStiqIQ8KCeTi",
+  growth:
+    process.env.NEXT_PUBLIC_DODO_GROWTH ||
+    "https://checkout.dodopayments.com/buy/pdt_0Ndi7nhruitorCScMTH5l",
+  pro:
+    process.env.NEXT_PUBLIC_DODO_PRO ||
+    "https://checkout.dodopayments.com/buy/pdt_0Ndi7p2WzzihLCdU4eVv4",
 };
 
 export const PRICING_TIERS = [
