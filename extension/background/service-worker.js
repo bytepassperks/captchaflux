@@ -129,13 +129,20 @@ async function fillCaptchaInAllFrames(tabId, token, captchaType) {
       func: (tkn, cType) => {
         // Try filling in every frame — the right frame will have the input
         const selectors = [
+          // MTCaptcha mini widget (most specific first)
+          "input.mtcap-inputtext-mini",
+          "input.mtcap-inputtext",
+          ".mtcap-inputbox-mini input",
+          ".mtcap-inputbox input",
+          'input[class*="mtcap" i]',
+          // Generic captcha selectors
           'input[name*="captcha" i]',
           'input[id*="captcha" i]',
           'input[class*="captcha" i]',
           'input[placeholder*="captcha" i]',
           'input[placeholder*="code" i]',
+          'input[placeholder*="text from" i]',
           'input[aria-label*="captcha" i]',
-          ".mtcap-inputbox input",
           "#mtcap-inputbox input",
           'input[name*="mtcap" i]',
           'input[id*="mtcap" i]',
@@ -143,7 +150,7 @@ async function fillCaptchaInAllFrames(tabId, token, captchaType) {
 
         for (const sel of selectors) {
           const input = document.querySelector(sel);
-          if (input && input.type !== "hidden" && input.offsetParent !== null) {
+          if (input && input.type !== "hidden") {
             // Clear existing value
             input.value = "";
             input.focus();
