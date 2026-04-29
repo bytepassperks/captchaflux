@@ -25,6 +25,15 @@ const AWS_ACCESS_KEY = process.env.AWS_ACCESS_KEY_ID || "";
 const AWS_SECRET_KEY = process.env.AWS_SECRET_ACCESS_KEY || "";
 const AWS_REGION = process.env.AWS_DEFAULT_REGION || "us-east-1";
 
+function detectMediaType(base64: string): string {
+  // JPEG starts with /9j/ in base64, PNG with iVBOR
+  if (base64.startsWith('/9j/') || base64.startsWith('/9j+')) return 'image/jpeg';
+  if (base64.startsWith('iVBOR')) return 'image/png';
+  if (base64.startsWith('R0lGOD')) return 'image/gif';
+  if (base64.startsWith('UklGR')) return 'image/webp';
+  return 'image/jpeg'; // default to jpeg (captureVisibleTab default)
+}
+
 async function solveImageChallengeWithVision(
   imageBase64: string,
   prompt: string,
@@ -107,7 +116,7 @@ Respond with ONLY JSON: {"indices": [numbers], "confidence": 0.9}`;
                   type: "image",
                   source: {
                     type: "base64",
-                    media_type: "image/png",
+                    media_type: detectMediaType(imageBase64),
                     data: imageBase64,
                   },
                 },
@@ -172,7 +181,7 @@ Respond with ONLY JSON: {"indices": [numbers], "confidence": 0.9}`;
                 type: "image",
                 source: {
                   type: "base64",
-                  media_type: "image/png",
+                  media_type: detectMediaType(imageBase64),
                   data: imageBase64,
                 },
               },

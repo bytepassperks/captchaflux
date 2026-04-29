@@ -108,21 +108,27 @@ async function handleCaptchaDetected(data, tabId) {
 
 // Capture visible tab and crop to a specific rect using OffscreenCanvas
 async function captureTabCaptcha(tabId, rect) {
-  const dataUrl = await chrome.tabs.captureVisibleTab(null, { format: "png" });
+  const dataUrl = await chrome.tabs.captureVisibleTab(null, { format: "jpeg", quality: 90 });
   const resp = await fetch(dataUrl);
   const blob = await resp.blob();
 
-  const dpr = rect.dpr || 1;
-  const sx = Math.max(0, Math.round(rect.x * dpr));
-  const sy = Math.max(0, Math.round(rect.y * dpr));
-  const sw = Math.max(1, Math.round(rect.width * dpr));
-  const sh = Math.max(1, Math.round(rect.height * dpr));
+  // Create full bitmap first, then crop with canvas (more reliable than createImageBitmap crop)
+  const fullBitmap = await createImageBitmap(blob);
+  const imgW = fullBitmap.width;
+  const imgH = fullBitmap.height;
 
-  const bitmap = await createImageBitmap(blob, sx, sy, sw, sh);
-  const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+  const dpr = rect.dpr || 1;
+  const sx = Math.max(0, Math.min(Math.round(rect.x * dpr), imgW - 1));
+  const sy = Math.max(0, Math.min(Math.round(rect.y * dpr), imgH - 1));
+  const sw = Math.max(1, Math.min(Math.round(rect.width * dpr), imgW - sx));
+  const sh = Math.max(1, Math.min(Math.round(rect.height * dpr), imgH - sy));
+
+  debugLog('[CaptchaFlux] Cropping screenshot:', { imgW, imgH, sx, sy, sw, sh, dpr });
+
+  const canvas = new OffscreenCanvas(sw, sh);
   const ctx = canvas.getContext("2d");
-  ctx.drawImage(bitmap, 0, 0);
-  const resultBlob = await canvas.convertToBlob({ type: "image/png" });
+  ctx.drawImage(fullBitmap, sx, sy, sw, sh, 0, 0, sw, sh);
+  const resultBlob = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.9 });
   const buffer = await resultBlob.arrayBuffer();
   const bytes = new Uint8Array(buffer);
   let binary = "";
@@ -621,7 +627,8 @@ async function solveTokenCaptchaClientSide(data, tabId) {
             }
 
             if (!screenshotB64) {
-              const fullDataUrl = await chrome.tabs.captureVisibleTab(null, { format: 'png' });
+              debugLog('[CaptchaFlux] WARNING: Using full page screenshot (no crop)');
+              const fullDataUrl = await chrome.tabs.captureVisibleTab(null, { format: 'jpeg', quality: 85 });
               screenshotB64 = fullDataUrl.split(',')[1];
             }
 
