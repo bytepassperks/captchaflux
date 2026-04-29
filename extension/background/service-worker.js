@@ -418,90 +418,146 @@ async function solveTokenCaptchaClientSide(data, tabId) {
     if (challenge) {
       debugLog('[CaptchaFlux] Image challenge detected:', challenge.prompt, 'grid:', challenge.gridSize);
 
-      // Capture screenshot of the challenge for vision AI
-      try {
-        const screenshotDataUrl = await chrome.tabs.captureVisibleTab(null, { format: 'png' });
-        const screenshotB64 = screenshotDataUrl.split(',')[1];
+      // Multi-round challenge solving loop (reCAPTCHA often requires 2-4 rounds)
+      const MAX_ROUNDS = 5;
+      for (let round = 0; round < MAX_ROUNDS; round++) {
+        debugLog('[CaptchaFlux] Challenge round', round + 1);
 
-        // Send to our vision API to solve the image challenge
-        const solveResp = await fetch(`${API_BASE}/api/extension/solve`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            apiKey: (await chrome.storage.local.get(['apiKey'])).apiKey,
-            captchaType: 'image_challenge',
-            pageUrl: data.pageUrl,
-            captchaImageBase64: screenshotB64,
-            challengePrompt: challenge.prompt,
-            gridSize: challenge.gridSize,
-          }),
-        });
+        try {
+          // Re-detect challenge info for this round (prompt/grid may change)
+          let currentChallenge = challenge;
+          if (round > 0) {
+            await new Promise(r => setTimeout(r, 2000)); // Wait for new images to load
 
-        const solveResult = await solveResp.json();
-        debugLog('[CaptchaFlux] Vision API result for image challenge:', JSON.stringify(solveResult));
+            // Check if token appeared (previous round might have been enough)
+            const midToken = await checkForToken(tabId, cType);
+            if (midToken) {
+              debugLog('[CaptchaFlux] Token found after round', round);
+              return { success: true, token: midToken, engine: 'vision_challenge' };
+            }
 
-        if (solveResult.success && solveResult.token) {
-          // Token contains comma-separated indices of cells to click (e.g., "2,5,6,9")
-          const cellIndices = solveResult.token.split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n));
-          debugLog('[CaptchaFlux] Clicking cells:', cellIndices);
-
-          if (cellIndices.length > 0) {
-            // Click the correct cells in the challenge iframe
-            await chrome.scripting.executeScript({
-              target: { tabId, allFrames: true },
-              func: (indices) => {
-                const table = document.querySelector('table.rc-imageselect-table, table');
-                if (!table) return null;
-                const cells = table.querySelectorAll('td');
-                const clicked = [];
-                for (const idx of indices) {
-                  if (idx >= 0 && idx < cells.length) {
-                    cells[idx].click();
-                    clicked.push(idx);
-                  }
-                }
-                return { clicked };
-              },
-              args: [cellIndices],
-            });
-
-            // Wait a moment then click verify button
-            await new Promise(r => setTimeout(r, 1000));
-            await chrome.scripting.executeScript({
+            // Re-detect challenge
+            const newChallengeInfo = await chrome.scripting.executeScript({
               target: { tabId, allFrames: true },
               func: () => {
-                const verify = document.querySelector('#recaptcha-verify-button, .verify-button-holder button, button[id*="verify"]');
-                if (verify) {
-                  verify.click();
-                  return { clicked: true };
+                const prompt = document.querySelector('.rc-imageselect-desc-wrapper, .rc-imageselect-desc, .rc-imageselect-instructions');
+                if (prompt) {
+                  const text = prompt.innerText || prompt.textContent || '';
+                  const table = document.querySelector('table.rc-imageselect-table, table');
+                  const cells = table ? table.querySelectorAll('td') : [];
+                  return { hasChallenge: true, prompt: text.trim(), gridSize: cells.length, frame: location.href, type: 'recaptcha_image' };
                 }
-                // hCaptcha verify
-                const hcVerify = document.querySelector('.button-submit');
-                if (hcVerify) {
-                  hcVerify.click();
-                  return { clicked: true };
+                const hcPrompt = document.querySelector('.prompt-text, .challenge-header');
+                if (hcPrompt) {
+                  const text = hcPrompt.innerText || hcPrompt.textContent || '';
+                  const cells = document.querySelectorAll('.task-image, [class*="task"]');
+                  return { hasChallenge: true, prompt: text.trim(), gridSize: cells.length, frame: location.href, type: 'hcaptcha_image' };
                 }
                 return null;
               },
             });
-
-            // Wait for token after verification
-            await new Promise(r => setTimeout(r, 3000));
-            const postVerifyToken = await checkForToken(tabId, cType);
-            if (postVerifyToken) {
-              return { success: true, token: postVerifyToken, engine: 'vision_challenge' };
+            const newChallenge = newChallengeInfo?.find(r => r.result?.hasChallenge)?.result;
+            if (!newChallenge) {
+              debugLog('[CaptchaFlux] No more challenge detected after round', round);
+              break;
             }
-
-            // May need another round of challenges — poll for longer
-            for (let i = 0; i < 5; i++) {
-              await new Promise(r => setTimeout(r, 3000));
-              const t = await checkForToken(tabId, cType);
-              if (t) return { success: true, token: t, engine: 'vision_challenge' };
-            }
+            currentChallenge = newChallenge;
+            debugLog('[CaptchaFlux] Round', round + 1, 'challenge:', currentChallenge.prompt, 'grid:', currentChallenge.gridSize);
           }
+
+          // Capture screenshot
+          const screenshotDataUrl = await chrome.tabs.captureVisibleTab(null, { format: 'png' });
+          const screenshotB64 = screenshotDataUrl.split(',')[1];
+
+          // Send to vision API
+          const solveResp = await fetch(`${API_BASE}/api/extension/solve`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              apiKey: (await chrome.storage.local.get(['apiKey'])).apiKey,
+              captchaType: 'image_challenge',
+              pageUrl: data.pageUrl,
+              captchaImageBase64: screenshotB64,
+              challengePrompt: currentChallenge.prompt,
+              gridSize: currentChallenge.gridSize,
+            }),
+          });
+
+          const solveResult = await solveResp.json();
+          debugLog('[CaptchaFlux] Vision API round', round + 1, 'result:', JSON.stringify(solveResult));
+
+          if (solveResult.success && solveResult.token) {
+            const cellIndices = solveResult.token.split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n));
+            debugLog('[CaptchaFlux] Round', round + 1, '- Clicking cells:', cellIndices);
+
+            if (cellIndices.length > 0) {
+              // Click the correct cells in the challenge iframe
+              await chrome.scripting.executeScript({
+                target: { tabId, allFrames: true },
+                func: (indices) => {
+                  const table = document.querySelector('table.rc-imageselect-table, table.rc-imageselect-table-33, table.rc-imageselect-table-44, table');
+                  if (!table) return null;
+                  const cells = table.querySelectorAll('td');
+                  const clicked = [];
+                  for (const idx of indices) {
+                    if (idx >= 0 && idx < cells.length) {
+                      cells[idx].click();
+                      clicked.push(idx);
+                    }
+                  }
+                  return { clicked, totalCells: cells.length };
+                },
+                args: [cellIndices],
+              });
+
+              // Wait for images to refresh/update after clicking
+              await new Promise(r => setTimeout(r, 1500));
+
+              // Click verify button
+              await chrome.scripting.executeScript({
+                target: { tabId, allFrames: true },
+                func: () => {
+                  const verify = document.querySelector('#recaptcha-verify-button, .verify-button-holder button, button[id*="verify"]');
+                  if (verify) {
+                    verify.click();
+                    return { clicked: true };
+                  }
+                  const hcVerify = document.querySelector('.button-submit');
+                  if (hcVerify) {
+                    hcVerify.click();
+                    return { clicked: true };
+                  }
+                  return null;
+                },
+              });
+
+              // Wait for response
+              await new Promise(r => setTimeout(r, 3000));
+
+              // Check for token
+              const postVerifyToken = await checkForToken(tabId, cType);
+              if (postVerifyToken) {
+                debugLog('[CaptchaFlux] Solved after round', round + 1);
+                return { success: true, token: postVerifyToken, engine: 'vision_challenge' };
+              }
+
+              // If no token, challenge might have another round — continue loop
+              debugLog('[CaptchaFlux] No token after round', round + 1, '- trying next round');
+            }
+          } else {
+            debugLog('[CaptchaFlux] Vision API returned no cells for round', round + 1);
+            break; // Don't retry if vision AI couldn't identify anything
+          }
+        } catch (e) {
+          debugLog('[CaptchaFlux] Image challenge round', round + 1, 'failed:', e.message);
+          break;
         }
-      } catch (e) {
-        debugLog('[CaptchaFlux] Image challenge solve failed:', e.message);
+      }
+
+      // Final token check
+      const finalToken = await checkForToken(tabId, cType);
+      if (finalToken) {
+        return { success: true, token: finalToken, engine: 'vision_challenge' };
       }
     }
   }

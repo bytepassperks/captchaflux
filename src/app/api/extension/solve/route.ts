@@ -30,23 +30,35 @@ async function solveImageChallengeWithVision(
   prompt: string,
   gridSize: number
 ): Promise<{ indices: number[]; confidence: number }> {
-  const rows = Math.sqrt(gridSize) || 4;
-  const cols = rows;
+  const rows = Math.round(Math.sqrt(gridSize)) || 3;
+  const cols = Math.ceil(gridSize / rows);
 
-  const visionPrompt = `You are analyzing a CAPTCHA image challenge screenshot. The challenge shows a ${rows}x${cols} grid of images.
+  // Build dynamic grid numbering
+  let gridMap = "";
+  for (let r = 0; r < rows; r++) {
+    const cells = [];
+    for (let c = 0; c < cols; c++) {
+      const idx = r * cols + c;
+      if (idx < gridSize) cells.push(idx);
+    }
+    gridMap += `Row ${r}: cells ${cells.join(", ")}\n`;
+  }
+
+  const visionPrompt = `You are analyzing a CAPTCHA image challenge screenshot. The screenshot shows a web page with a CAPTCHA popup/overlay containing a ${rows}x${cols} grid of images.
 
 The challenge prompt says: "${prompt}"
 
 The grid cells are numbered 0 to ${gridSize - 1}, left to right, top to bottom:
-Row 0: cells 0, 1, 2, 3
-Row 1: cells 4, 5, 6, 7
-Row 2: cells 8, 9, 10, 11
-Row 3: cells 12, 13, 14, 15
+${gridMap}
+Look at the screenshot carefully. Find the image grid popup/overlay. Identify which grid cells contain the requested object.
 
-Look at the screenshot carefully. Identify which grid cells contain the requested object. The grid is inside an image challenge popup/overlay on the page.
+IMPORTANT RULES:
+- Only select cells that CLEARLY contain the target object
+- The grid is inside a popup/dialog overlay on the page, not the background
+- Cell numbering starts at 0 (top-left) and goes left-to-right, top-to-bottom
+- Return ONLY a JSON object, no other text
 
-IMPORTANT: Return ONLY a JSON object with the cell indices that match the challenge prompt. Format:
-{"indices": [0, 4, 8], "confidence": 0.85}
+Format: {"indices": [0, 4, 8], "confidence": 0.85}
 
 Return ONLY the JSON, no other text.`;
 
