@@ -65,33 +65,41 @@ async function solveImageChallengeWithVision(
   const isTileGrid = gridSize === 16; // 4x4 grids are usually one image split into tiles
 
   const visionPrompt = isTileGrid
-    ? `You are analyzing a CAPTCHA image challenge. The image shows ONE large photograph divided into a ${rows}x${cols} grid (${gridSize} tiles total).
+    ? `You are analyzing a screenshot of a CAPTCHA challenge popup. The screenshot shows a reCAPTCHA dialog containing:
+- A blue header bar with instructions (IGNORE this text — I already extracted the prompt for you)
+- Below the header: ONE large photograph divided into a ${rows}x${cols} grid (${gridSize} tiles) with thin white lines separating tiles
+- Below the grid: buttons (IGNORE these)
 
-Task: Select ONLY the tiles that contain ${targetObject}.
+The actual task: Select tiles containing "${targetObject}".
 
 Grid numbering (0-indexed, left-to-right, top-to-bottom):
 ${gridMap}
 
-IMPORTANT RULES:
+CRITICAL RULES:
+- ONLY look at the main grid image area. Ignore header text, buttons, and anything outside the grid.
 - Only select tiles where ${targetObject} is actually visible in that specific tile
-- Do NOT select tiles that show only background, sky, road, buildings, etc.
-- The target object typically occupies 3-8 tiles out of 16. NEVER select all 16.
-- Look carefully at each tile individually before deciding
-- If the image also contains text like "Select all squares with...", IGNORE that text and focus on the actual grid images
+- Do NOT select tiles showing only background, road, sky, buildings, etc.
+- Typically 3-8 tiles contain the target. NEVER select more than 10 tiles.
+- NEVER select all ${gridSize} tiles — that is always wrong.
+- Be conservative: if unsure about a tile, do NOT select it.
 
 Respond with ONLY JSON: {"indices": [numbers], "confidence": 0.9}`
-    : `You are analyzing a CAPTCHA image challenge. The image shows a ${rows}x${cols} grid of ${gridSize} SEPARATE photographs.
+    : `You are analyzing a screenshot of a CAPTCHA challenge popup. The screenshot shows a reCAPTCHA dialog containing:
+- A blue header bar with instructions (IGNORE this text — I already extracted the prompt for you)  
+- Below the header: a ${rows}x${cols} grid of ${gridSize} SEPARATE photographs arranged in a grid
+- Below the grid: buttons (IGNORE these)
 
-Task: Select ONLY the images that clearly show ${targetObject}.
+The actual task: Select images that clearly show "${targetObject}".
 
 Grid numbering (0-indexed, left-to-right, top-to-bottom):
 ${gridMap}
 
-IMPORTANT RULES:
-- Only select images where ${targetObject} is clearly the main subject or prominently visible
-- Usually 2-4 images match. NEVER select all images.
-- Look at each image individually
-- If the image also contains text like "Select all images with...", IGNORE that text
+CRITICAL RULES:
+- ONLY look at the ${gridSize} individual photos in the grid. Ignore header text, buttons, and page elements outside the grid.
+- Only select images where ${targetObject} is the main subject or prominently visible
+- Usually 2-4 images match out of ${gridSize}. NEVER select all.
+- Be conservative: only select images where you are confident the target is visible.
+- If you see more images than ${gridSize}, you are seeing page elements outside the captcha — ignore them.
 
 Respond with ONLY JSON: {"indices": [numbers], "confidence": 0.9}`;
 
@@ -142,12 +150,12 @@ Respond with ONLY JSON: {"indices": [numbers], "confidence": 0.9}`;
             console.warn(`[Vision] ALL cells selected (${parsed.indices.length}/${gridSize}), rejecting — this is always wrong`);
             return { indices: [], confidence: 0.1 };
           }
-          if (isTileGrid && parsed.indices && parsed.indices.length > gridSize * 0.75) {
-            console.warn(`[Vision] Too many tiles selected for tile grid (${parsed.indices.length}/${gridSize}), rejecting`);
+          if (isTileGrid && parsed.indices && parsed.indices.length > gridSize * 0.6) {
+            console.warn(`[Vision] Too many tiles selected for tile grid (${parsed.indices.length}/${gridSize} > 60%), rejecting`);
             return { indices: [], confidence: 0.1 };
           }
-          if (!isTileGrid && parsed.indices && parsed.indices.length > gridSize * 0.6) {
-            console.warn(`[Vision] Too many cells for separate-image grid (${parsed.indices.length}/${gridSize}), rejecting`);
+          if (!isTileGrid && parsed.indices && parsed.indices.length > Math.ceil(gridSize * 0.55)) {
+            console.warn(`[Vision] Too many cells for separate-image grid (${parsed.indices.length}/${gridSize} > 55%), rejecting`);
             return { indices: [], confidence: 0.1 };
           }
           return {

@@ -544,74 +544,33 @@ async function solveTokenCaptchaClientSide(data, tabId) {
               });
             } catch (e) {}
 
-            // Get the grid TABLE rect (not the whole bframe) for tight cropping
-            // This excludes the header text and buttons that confuse the vision AI
+            // Get the challenge iframe rect for cropping
             let challengeRect = null;
             try {
-              // Step 1: Get bframe position on the page
               const frameRectResults = await chrome.scripting.executeScript({
                 target: { tabId },
                 func: () => {
-                  const bframe = document.querySelector('iframe[src*="recaptcha/api2/bframe"], iframe[src*="recaptcha/enterprise/bframe"]');
-                  if (bframe) {
-                    const r = bframe.getBoundingClientRect();
-                    return { fx: r.x, fy: r.y, dpr: window.devicePixelRatio || 1 };
-                  }
-                  const hcFrame = document.querySelector('iframe[src*="hcaptcha.com/captcha/challenge"]');
-                  if (hcFrame) {
-                    const r = hcFrame.getBoundingClientRect();
-                    return { fx: r.x, fy: r.y, dpr: window.devicePixelRatio || 1 };
+                  // Find the visible challenge iframe (reCAPTCHA bframe or hCaptcha)
+                  const selectors = [
+                    'iframe[src*="recaptcha/api2/bframe"]',
+                    'iframe[src*="recaptcha/enterprise/bframe"]',
+                    'iframe[src*="hcaptcha.com/captcha/challenge"]',
+                  ];
+                  for (const sel of selectors) {
+                    const frame = document.querySelector(sel);
+                    if (frame) {
+                      const r = frame.getBoundingClientRect();
+                      if (r.width > 100 && r.height > 100) {
+                        return { x: r.x, y: r.y, width: r.width, height: r.height, dpr: window.devicePixelRatio || 1 };
+                      }
+                    }
                   }
                   return null;
                 },
               });
-              const framePos = frameRectResults?.[0]?.result;
-
-              // Step 2: Get table rect inside the bframe
-              if (framePos) {
-                const tableRectResults = await chrome.scripting.executeScript({
-                  target: { tabId, allFrames: true },
-                  func: () => {
-                    const table = document.querySelector('table.rc-imageselect-table, table.rc-imageselect-table-33, table.rc-imageselect-table-44, table[class*="rc-imageselect"]');
-                    if (table) {
-                      const r = table.getBoundingClientRect();
-                      return { tx: r.x, ty: r.y, tw: r.width, th: r.height };
-                    }
-                    // hCaptcha grid
-                    const hcGrid = document.querySelector('.task-grid, [class*="task-image"]');
-                    if (hcGrid) {
-                      const r = (hcGrid.closest('.task-grid') || hcGrid).getBoundingClientRect();
-                      return { tx: r.x, ty: r.y, tw: r.width, th: r.height };
-                    }
-                    return null;
-                  },
-                });
-                const tableRect = tableRectResults?.find(r => r.result?.tw > 0)?.result;
-                if (tableRect) {
-                  // Combine: bframe position + table position inside bframe
-                  challengeRect = {
-                    x: framePos.fx + tableRect.tx,
-                    y: framePos.fy + tableRect.ty,
-                    width: tableRect.tw,
-                    height: tableRect.th,
-                    dpr: framePos.dpr,
-                  };
-                  debugLog('[CaptchaFlux] Grid table rect:', JSON.stringify(challengeRect));
-                } else {
-                  // Fallback: use the full bframe
-                  const fullFrameResults = await chrome.scripting.executeScript({
-                    target: { tabId },
-                    func: () => {
-                      const bframe = document.querySelector('iframe[src*="recaptcha/api2/bframe"], iframe[src*="recaptcha/enterprise/bframe"], iframe[src*="hcaptcha.com/captcha/challenge"]');
-                      if (bframe) {
-                        const r = bframe.getBoundingClientRect();
-                        return { x: r.x, y: r.y, width: r.width, height: r.height, dpr: window.devicePixelRatio || 1 };
-                      }
-                      return null;
-                    },
-                  });
-                  challengeRect = fullFrameResults?.[0]?.result;
-                }
+              challengeRect = frameRectResults?.[0]?.result;
+              if (challengeRect) {
+                debugLog('[CaptchaFlux] Challenge iframe rect:', JSON.stringify(challengeRect));
               }
             } catch (e) {
               debugLog('[CaptchaFlux] Rect extraction error:', e.message);
