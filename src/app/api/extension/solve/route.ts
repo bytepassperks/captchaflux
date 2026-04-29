@@ -44,17 +44,31 @@ async function solveImageChallengeWithVision(
     gridMap += `Row ${r}: cells ${cells.join(", ")}\n`;
   }
 
-  const visionPrompt = `You are a CAPTCHA image challenge solver. The image shows a ${rows}x${cols} grid of photographs. Each cell contains a different photograph.
+  // Extract the target object from the prompt
+  const targetObject = prompt
+    .replace(/select all (images|squares|tiles|pictures) (with|containing|of|that contain|showing) /i, '')
+    .replace(/click verify once there are none left\.?/i, '')
+    .replace(/if there are none,? click skip\.?/i, '')
+    .trim();
 
-TASK: "${prompt}"
+  console.log(`[Vision] Grid: ${rows}x${cols}=${gridSize}, Target: "${targetObject}", Prompt: "${prompt}", ImageSize: ${imageBase64.length} chars`);
 
-Grid numbering (0-indexed, left-to-right, top-to-bottom):
+  const visionPrompt = `You are solving a CAPTCHA image grid challenge.
+
+The image is a ${rows}x${cols} grid of ${gridSize} separate photographs arranged in rows and columns.
+
+I need you to identify which grid cells contain: ${targetObject}
+
+Grid cell numbering (0-indexed):
 ${gridMap}
-Carefully examine each of the ${gridSize} grid cells. Select ALL cells where the target object ("${prompt.replace(/select all (images|squares|tiles) with /i, '').replace(/click verify once there are none left\./i, '').trim()}") is clearly visible.
+IMPORTANT RULES:
+- Most challenges have only 2-4 correct cells out of ${gridSize}. Do NOT select all cells.
+- Only select cells where ${targetObject} is CLEARLY and OBVIOUSLY visible as a main subject
+- If a cell shows a street scene but ${targetObject} is not prominently visible, do NOT select it
+- Partial visibility counts only if the object is still clearly recognizable
+- When in doubt, do NOT include the cell
 
-Cell 0 = top-left corner. Cell ${gridSize - 1} = bottom-right corner.
-
-Return ONLY a JSON object: {"indices": [list of matching cell numbers], "confidence": 0.85}`;
+Return ONLY valid JSON: {"indices": [matching cell numbers], "confidence": 0.85}`;
 
   // Try PageGrid Claude first
   if (PAGEGRID_API_KEY) {
@@ -93,14 +107,24 @@ Return ONLY a JSON object: {"indices": [list of matching cell numbers], "confide
         const data = await resp.json();
         const text =
           data.content?.[0]?.text || data.choices?.[0]?.message?.content || "";
+        console.log(`[Vision] PageGrid raw response: ${text.substring(0, 500)}`);
         const jsonMatch = text.match(/\{[\s\S]*?\}/);
         if (jsonMatch) {
           const parsed = JSON.parse(jsonMatch[0]);
+          console.log(`[Vision] PageGrid result: indices=${JSON.stringify(parsed.indices)}, confidence=${parsed.confidence}`);
+          // Sanity check: if more than 60% of cells selected, likely wrong
+          if (parsed.indices && parsed.indices.length > gridSize * 0.6) {
+            console.warn(`[Vision] Too many cells selected (${parsed.indices.length}/${gridSize}), likely wrong. Returning empty.`);
+            return { indices: [], confidence: 0.1 };
+          }
           return {
             indices: parsed.indices || [],
             confidence: parsed.confidence || 0.8,
           };
         }
+      } else {
+        const errText = await resp.text();
+        console.error(`[Vision] PageGrid API error ${resp.status}: ${errText.substring(0, 300)}`);
       }
     } catch (e) {
       console.error("PageGrid vision failed:", e);

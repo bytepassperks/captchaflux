@@ -539,11 +539,67 @@ async function solveTokenCaptchaClientSide(data, tabId) {
             screenshotB64 = currentChallenge.gridImageB64;
           }
 
-          // Priority 2: Fall back to tab screenshot
+          // Priority 2: Fall back to cropped tab screenshot (hide modal first)
           if (!screenshotB64) {
-            debugLog('[CaptchaFlux] Grid extraction failed, using tab screenshot');
-            const fullDataUrl = await chrome.tabs.captureVisibleTab(null, { format: 'png' });
-            screenshotB64 = fullDataUrl.split(',')[1];
+            debugLog('[CaptchaFlux] Grid extraction failed, using cropped tab screenshot');
+
+            // Hide the CaptchaFlux modal so it doesn't appear in screenshot
+            try {
+              await chrome.scripting.executeScript({
+                target: { tabId },
+                func: () => {
+                  const modal = document.getElementById('captchaflux-modal');
+                  if (modal) modal.style.display = 'none';
+                },
+              });
+            } catch (e) {}
+
+            // Get challenge iframe rect for cropping
+            let challengeRect = null;
+            try {
+              const rectResults = await chrome.scripting.executeScript({
+                target: { tabId },
+                func: () => {
+                  const bframe = document.querySelector('iframe[src*="recaptcha/api2/bframe"], iframe[src*="recaptcha/enterprise/bframe"]');
+                  if (bframe) {
+                    const r = bframe.getBoundingClientRect();
+                    return { x: r.x, y: r.y, width: r.width, height: r.height, dpr: window.devicePixelRatio || 1 };
+                  }
+                  const hcFrame = document.querySelector('iframe[src*="hcaptcha.com/captcha/challenge"]');
+                  if (hcFrame) {
+                    const r = hcFrame.getBoundingClientRect();
+                    return { x: r.x, y: r.y, width: r.width, height: r.height, dpr: window.devicePixelRatio || 1 };
+                  }
+                  return null;
+                },
+              });
+              challengeRect = rectResults?.[0]?.result;
+            } catch (e) {}
+
+            if (challengeRect && challengeRect.width > 50 && challengeRect.height > 50) {
+              try {
+                screenshotB64 = await captureTabCaptcha(tabId, challengeRect);
+                debugLog('[CaptchaFlux] Cropped screenshot to challenge area:', challengeRect.width, 'x', challengeRect.height);
+              } catch (cropErr) {
+                debugLog('[CaptchaFlux] Crop failed:', cropErr.message);
+              }
+            }
+
+            if (!screenshotB64) {
+              const fullDataUrl = await chrome.tabs.captureVisibleTab(null, { format: 'png' });
+              screenshotB64 = fullDataUrl.split(',')[1];
+            }
+
+            // Show modal again
+            try {
+              await chrome.scripting.executeScript({
+                target: { tabId },
+                func: () => {
+                  const modal = document.getElementById('captchaflux-modal');
+                  if (modal) modal.style.display = '';
+                },
+              });
+            } catch (e) {}
           }
 
           // Send to vision API
