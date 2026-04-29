@@ -272,6 +272,39 @@ async function fillCaptchaInAllFrames(tabId, token, captchaType) {
   }
 }
 
+// Helper: check if a captcha token has appeared in the page
+async function checkForToken(tabId, captchaType) {
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (cType) => {
+        if (cType === 'recaptcha_v2' || cType === 'recaptcha_v3') {
+          const ta = document.querySelector('#g-recaptcha-response');
+          if (ta && ta.value && ta.value.length > 20) return ta.value;
+          // Also check all textareas with the name
+          const all = document.querySelectorAll('textarea[name="g-recaptcha-response"]');
+          for (const el of all) {
+            if (el.value && el.value.length > 20) return el.value;
+          }
+        }
+        if (cType === 'hcaptcha') {
+          const ta = document.querySelector('textarea[name="h-captcha-response"]');
+          if (ta && ta.value && ta.value.length > 20) return ta.value;
+        }
+        if (cType === 'turnstile') {
+          const inp = document.querySelector('input[name="cf-turnstile-response"]');
+          if (inp && inp.value && inp.value.length > 20) return inp.value;
+        }
+        return null;
+      },
+      args: [captchaType],
+    });
+    return results?.[0]?.result || null;
+  } catch {
+    return null;
+  }
+}
+
 // Solve token-based captchas (reCAPTCHA, hCaptcha, Turnstile) by clicking checkbox in user's browser
 async function solveTokenCaptchaClientSide(data, tabId) {
   const cType = data.captchaType;
@@ -345,91 +378,143 @@ async function solveTokenCaptchaClientSide(data, tabId) {
     });
   }
 
-  // Step 2: Wait for token to appear (poll for up to 30 seconds)
-  for (let attempt = 0; attempt < 15; attempt++) {
-    await new Promise(r => setTimeout(r, 2000));
+  // Step 2: Wait briefly for auto-pass, then check for image challenge
+  await new Promise(r => setTimeout(r, 3000));
 
-    const tokenResults = await chrome.scripting.executeScript({
-      target: { tabId },
-      func: (captchaType) => {
-        if (captchaType === 'recaptcha_v2' || captchaType === 'recaptcha_v3') {
-          const ta = document.querySelector('#g-recaptcha-response');
-          if (ta && ta.value && ta.value.length > 20) {
-            return { token: ta.value, source: 'g-recaptcha-response' };
-          }
-        }
-        if (captchaType === 'hcaptcha') {
-          const ta = document.querySelector('textarea[name="h-captcha-response"]');
-          if (ta && ta.value && ta.value.length > 20) {
-            return { token: ta.value, source: 'h-captcha-response' };
-          }
-        }
-        if (captchaType === 'turnstile') {
-          const inp = document.querySelector('input[name="cf-turnstile-response"]');
-          if (inp && inp.value && inp.value.length > 20) {
-            return { token: inp.value, source: 'cf-turnstile-response' };
-          }
-        }
-        // Check for green checkmark (reCAPTCHA solved state)
-        const anchor = document.querySelector('.recaptcha-checkbox-checked, .recaptcha-checkbox[aria-checked="true"]');
-        if (anchor) {
-          // reCAPTCHA solved but token might be in iframe
-          return { solved: true, source: 'checkbox-state' };
-        }
-        return null;
-      },
-      args: [cType],
-    });
-
-    const tokenResult = tokenResults?.[0]?.result;
-    if (tokenResult?.token) {
-      debugLog('[CaptchaFlux] Token found after', (attempt + 1) * 2, 'seconds from', tokenResult.source);
-      return { success: true, token: tokenResult.token, engine: 'client_checkbox' };
-    }
-
-    // Also check inside iframes for the solved state
-    const iframeCheck = await chrome.scripting.executeScript({
-      target: { tabId, allFrames: true },
-      func: () => {
-        // Check if reCAPTCHA shows green checkmark
-        const checked = document.querySelector('.recaptcha-checkbox-checked, [aria-checked="true"]#recaptcha-anchor');
-        if (checked) return { solved: true, frame: location.href };
-        // Check hCaptcha solved
-        const hcSolved = document.querySelector('.check.checked, #checkbox[aria-checked="true"]');
-        if (hcSolved) return { solved: true, frame: location.href };
-        return null;
-      },
-    });
-
-    const solvedFrame = iframeCheck?.find(r => r.result?.solved);
-    if (solvedFrame) {
-      // Captcha visually solved, try to get token from main frame
-      debugLog('[CaptchaFlux] Checkbox solved, extracting token...');
-      await new Promise(r => setTimeout(r, 1000));
-      const finalToken = await chrome.scripting.executeScript({
-        target: { tabId },
-        func: () => {
-          const fields = [
-            document.querySelector('#g-recaptcha-response'),
-            document.querySelector('textarea[name="g-recaptcha-response"]'),
-            document.querySelector('textarea[name="h-captcha-response"]'),
-            document.querySelector('input[name="cf-turnstile-response"]'),
-          ];
-          for (const f of fields) {
-            if (f && f.value && f.value.length > 20) return f.value;
-          }
-          return null;
-        },
-      });
-      if (finalToken?.[0]?.result) {
-        return { success: true, token: finalToken[0].result, engine: 'client_checkbox' };
-      }
-    }
-
-    debugLog('[CaptchaFlux] Poll attempt', attempt + 1, '- no token yet');
+  // Check for token first (auto-pass case)
+  let autoToken = await checkForToken(tabId, cType);
+  if (autoToken) {
+    debugLog('[CaptchaFlux] Auto-pass! Token found immediately');
+    return { success: true, token: autoToken, engine: 'client_autopass' };
   }
 
-  return { success: false, error: 'Captcha checkbox clicked but no token received (may require image challenge)' };
+  // Step 3: Check if image challenge appeared (reCAPTCHA/hCaptcha)
+  if (cType === 'recaptcha_v2' || cType === 'hcaptcha') {
+    debugLog('[CaptchaFlux] Checking for image challenge...');
+    const challengeInfo = await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      func: () => {
+        // reCAPTCHA image challenge
+        const prompt = document.querySelector('.rc-imageselect-desc-wrapper, .rc-imageselect-desc, .rc-imageselect-instructions');
+        if (prompt) {
+          const text = prompt.innerText || prompt.textContent || '';
+          const table = document.querySelector('table.rc-imageselect-table, table');
+          const cells = table ? table.querySelectorAll('td') : [];
+          const gridSize = cells.length;
+          return { hasChallenge: true, prompt: text.trim(), gridSize, frame: location.href, type: 'recaptcha_image' };
+        }
+        // hCaptcha image challenge
+        const hcPrompt = document.querySelector('.prompt-text, .challenge-header');
+        if (hcPrompt) {
+          const text = hcPrompt.innerText || hcPrompt.textContent || '';
+          const cells = document.querySelectorAll('.task-image, [class*="task"]');
+          return { hasChallenge: true, prompt: text.trim(), gridSize: cells.length, frame: location.href, type: 'hcaptcha_image' };
+        }
+        return null;
+      },
+    });
+
+    const challenge = challengeInfo?.find(r => r.result?.hasChallenge)?.result;
+    if (challenge) {
+      debugLog('[CaptchaFlux] Image challenge detected:', challenge.prompt, 'grid:', challenge.gridSize);
+
+      // Capture screenshot of the challenge for vision AI
+      try {
+        const screenshotDataUrl = await chrome.tabs.captureVisibleTab(null, { format: 'png' });
+        const screenshotB64 = screenshotDataUrl.split(',')[1];
+
+        // Send to our vision API to solve the image challenge
+        const solveResp = await fetch(`${API_BASE}/api/extension/solve`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            apiKey: (await chrome.storage.local.get(['apiKey'])).apiKey,
+            captchaType: 'image_challenge',
+            pageUrl: data.pageUrl,
+            captchaImageBase64: screenshotB64,
+            challengePrompt: challenge.prompt,
+            gridSize: challenge.gridSize,
+          }),
+        });
+
+        const solveResult = await solveResp.json();
+        debugLog('[CaptchaFlux] Vision API result for image challenge:', JSON.stringify(solveResult));
+
+        if (solveResult.success && solveResult.token) {
+          // Token contains comma-separated indices of cells to click (e.g., "2,5,6,9")
+          const cellIndices = solveResult.token.split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n));
+          debugLog('[CaptchaFlux] Clicking cells:', cellIndices);
+
+          if (cellIndices.length > 0) {
+            // Click the correct cells in the challenge iframe
+            await chrome.scripting.executeScript({
+              target: { tabId, allFrames: true },
+              func: (indices) => {
+                const table = document.querySelector('table.rc-imageselect-table, table');
+                if (!table) return null;
+                const cells = table.querySelectorAll('td');
+                const clicked = [];
+                for (const idx of indices) {
+                  if (idx >= 0 && idx < cells.length) {
+                    cells[idx].click();
+                    clicked.push(idx);
+                  }
+                }
+                return { clicked };
+              },
+              args: [cellIndices],
+            });
+
+            // Wait a moment then click verify button
+            await new Promise(r => setTimeout(r, 1000));
+            await chrome.scripting.executeScript({
+              target: { tabId, allFrames: true },
+              func: () => {
+                const verify = document.querySelector('#recaptcha-verify-button, .verify-button-holder button, button[id*="verify"]');
+                if (verify) {
+                  verify.click();
+                  return { clicked: true };
+                }
+                // hCaptcha verify
+                const hcVerify = document.querySelector('.button-submit');
+                if (hcVerify) {
+                  hcVerify.click();
+                  return { clicked: true };
+                }
+                return null;
+              },
+            });
+
+            // Wait for token after verification
+            await new Promise(r => setTimeout(r, 3000));
+            const postVerifyToken = await checkForToken(tabId, cType);
+            if (postVerifyToken) {
+              return { success: true, token: postVerifyToken, engine: 'vision_challenge' };
+            }
+
+            // May need another round of challenges — poll for longer
+            for (let i = 0; i < 5; i++) {
+              await new Promise(r => setTimeout(r, 3000));
+              const t = await checkForToken(tabId, cType);
+              if (t) return { success: true, token: t, engine: 'vision_challenge' };
+            }
+          }
+        }
+      } catch (e) {
+        debugLog('[CaptchaFlux] Image challenge solve failed:', e.message);
+      }
+    }
+  }
+
+  // Step 4: Final polling for token (in case it appeared during challenge)
+  for (let attempt = 0; attempt < 5; attempt++) {
+    await new Promise(r => setTimeout(r, 2000));
+    const t = await checkForToken(tabId, cType);
+    if (t) return { success: true, token: t, engine: 'client_delayed' };
+    debugLog('[CaptchaFlux] Final poll attempt', attempt + 1, '- no token yet');
+  }
+
+  return { success: false, error: 'Captcha checkbox clicked but could not solve image challenge automatically' };
 }
 
 async function solveCaptcha(data, tabId, apiKey) {

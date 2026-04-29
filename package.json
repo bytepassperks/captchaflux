@@ -9,7 +9,9 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@aws-crypto/sha256-js": "^5.2.0",
     "@base-ui/react": "^1.4.1",
+    "@smithy/signature-v4": "^5.3.14",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "framer-motion": "^12.38.0",
