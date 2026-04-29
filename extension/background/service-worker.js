@@ -392,35 +392,7 @@ async function solveTokenCaptchaClientSide(data, tabId) {
   if (cType === 'recaptcha_v2' || cType === 'hcaptcha') {
     debugLog('[CaptchaFlux] Checking for image challenge...');
 
-    // First, get the challenge iframe bounding rect from the main page for cropping
-    let challengeRect = null;
-    try {
-      const rectResults = await chrome.scripting.executeScript({
-        target: { tabId },
-        func: () => {
-          // reCAPTCHA bframe
-          const bframe = document.querySelector('iframe[src*="recaptcha/api2/bframe"], iframe[src*="recaptcha/enterprise/bframe"]');
-          if (bframe) {
-            const r = bframe.getBoundingClientRect();
-            return { x: r.x, y: r.y, width: r.width, height: r.height, dpr: window.devicePixelRatio || 1 };
-          }
-          // hCaptcha challenge frame
-          const hcFrame = document.querySelector('iframe[src*="hcaptcha.com/captcha/challenge"]');
-          if (hcFrame) {
-            const r = hcFrame.getBoundingClientRect();
-            return { x: r.x, y: r.y, width: r.width, height: r.height, dpr: window.devicePixelRatio || 1 };
-          }
-          return null;
-        },
-      });
-      challengeRect = rectResults?.[0]?.result;
-      if (challengeRect) {
-        debugLog('[CaptchaFlux] Challenge iframe rect:', JSON.stringify(challengeRect));
-      }
-    } catch (e) {
-      debugLog('[CaptchaFlux] Could not get challenge rect:', e.message);
-    }
-
+    // Detect challenge AND extract grid image directly from inside the iframe
     const challengeInfo = await chrome.scripting.executeScript({
       target: { tabId, allFrames: true },
       func: () => {
@@ -428,10 +400,46 @@ async function solveTokenCaptchaClientSide(data, tabId) {
         const prompt = document.querySelector('.rc-imageselect-desc-wrapper, .rc-imageselect-desc, .rc-imageselect-instructions');
         if (prompt) {
           const text = prompt.innerText || prompt.textContent || '';
-          const table = document.querySelector('table.rc-imageselect-table, table');
+          const table = document.querySelector('table.rc-imageselect-table, table.rc-imageselect-table-33, table.rc-imageselect-table-44, table');
           const cells = table ? table.querySelectorAll('td') : [];
           const gridSize = cells.length;
-          return { hasChallenge: true, prompt: text.trim(), gridSize, frame: location.href, type: 'recaptcha_image' };
+
+          // Extract grid image by compositing cell images onto canvas
+          let gridImageB64 = null;
+          try {
+            const imgs = table ? table.querySelectorAll('td img') : [];
+            if (imgs.length > 0 && imgs.length === gridSize) {
+              const rows = Math.round(Math.sqrt(gridSize));
+              const cols = Math.ceil(gridSize / rows);
+              // Use first image dimensions as cell size
+              const cellW = imgs[0].naturalWidth || imgs[0].width || 100;
+              const cellH = imgs[0].naturalHeight || imgs[0].height || 100;
+              const canvas = document.createElement('canvas');
+              canvas.width = cols * cellW;
+              canvas.height = rows * cellH;
+              const ctx = canvas.getContext('2d');
+
+              for (let i = 0; i < imgs.length; i++) {
+                const row = Math.floor(i / cols);
+                const col = i % cols;
+                try {
+                  ctx.drawImage(imgs[i], col * cellW, row * cellH, cellW, cellH);
+                } catch (e) {
+                  // Image might be tainted
+                }
+              }
+
+              try {
+                gridImageB64 = canvas.toDataURL('image/png').split(',')[1];
+              } catch (e) {
+                // Canvas tainted — fall back to screenshot
+              }
+            }
+          } catch (e) {
+            // Canvas extraction failed
+          }
+
+          return { hasChallenge: true, prompt: text.trim(), gridSize, frame: location.href, type: 'recaptcha_image', gridImageB64 };
         }
         // hCaptcha image challenge
         const hcPrompt = document.querySelector('.prompt-text, .challenge-header');
@@ -466,16 +474,40 @@ async function solveTokenCaptchaClientSide(data, tabId) {
               return { success: true, token: midToken, engine: 'vision_challenge' };
             }
 
-            // Re-detect challenge
+            // Re-detect challenge with grid image extraction
             const newChallengeInfo = await chrome.scripting.executeScript({
               target: { tabId, allFrames: true },
               func: () => {
                 const prompt = document.querySelector('.rc-imageselect-desc-wrapper, .rc-imageselect-desc, .rc-imageselect-instructions');
                 if (prompt) {
                   const text = prompt.innerText || prompt.textContent || '';
-                  const table = document.querySelector('table.rc-imageselect-table, table');
+                  const table = document.querySelector('table.rc-imageselect-table, table.rc-imageselect-table-33, table.rc-imageselect-table-44, table');
                   const cells = table ? table.querySelectorAll('td') : [];
-                  return { hasChallenge: true, prompt: text.trim(), gridSize: cells.length, frame: location.href, type: 'recaptcha_image' };
+                  const gridSize = cells.length;
+
+                  // Extract grid image
+                  let gridImageB64 = null;
+                  try {
+                    const imgs = table ? table.querySelectorAll('td img') : [];
+                    if (imgs.length > 0 && imgs.length === gridSize) {
+                      const rows = Math.round(Math.sqrt(gridSize));
+                      const cols = Math.ceil(gridSize / rows);
+                      const cellW = imgs[0].naturalWidth || imgs[0].width || 100;
+                      const cellH = imgs[0].naturalHeight || imgs[0].height || 100;
+                      const canvas = document.createElement('canvas');
+                      canvas.width = cols * cellW;
+                      canvas.height = rows * cellH;
+                      const ctx = canvas.getContext('2d');
+                      for (let i = 0; i < imgs.length; i++) {
+                        const row = Math.floor(i / cols);
+                        const col = i % cols;
+                        try { ctx.drawImage(imgs[i], col * cellW, row * cellH, cellW, cellH); } catch (e) {}
+                      }
+                      try { gridImageB64 = canvas.toDataURL('image/png').split(',')[1]; } catch (e) {}
+                    }
+                  } catch (e) {}
+
+                  return { hasChallenge: true, prompt: text.trim(), gridSize, frame: location.href, type: 'recaptcha_image', gridImageB64 };
                 }
                 const hcPrompt = document.querySelector('.prompt-text, .challenge-header');
                 if (hcPrompt) {
@@ -495,18 +527,21 @@ async function solveTokenCaptchaClientSide(data, tabId) {
             debugLog('[CaptchaFlux] Round', round + 1, 'challenge:', currentChallenge.prompt, 'grid:', currentChallenge.gridSize);
           }
 
-          // Capture screenshot and crop to challenge area for better accuracy
+          // Get the best available image of the challenge grid
           let screenshotB64;
-          if (challengeRect && challengeRect.width > 50 && challengeRect.height > 50) {
-            debugLog('[CaptchaFlux] Cropping screenshot to challenge iframe area');
-            try {
-              screenshotB64 = await captureTabCaptcha(tabId, challengeRect);
-            } catch (cropErr) {
-              debugLog('[CaptchaFlux] Crop failed, using full screenshot:', cropErr.message);
-              const fullDataUrl = await chrome.tabs.captureVisibleTab(null, { format: 'png' });
-              screenshotB64 = fullDataUrl.split(',')[1];
-            }
-          } else {
+
+          // Priority 1: Use grid image extracted directly from inside the iframe (cleanest)
+          if (round === 0 && challenge.gridImageB64) {
+            debugLog('[CaptchaFlux] Using extracted grid image from iframe (', challenge.gridImageB64.length, 'chars)');
+            screenshotB64 = challenge.gridImageB64;
+          } else if (round > 0 && currentChallenge.gridImageB64) {
+            debugLog('[CaptchaFlux] Using extracted grid image from round', round + 1);
+            screenshotB64 = currentChallenge.gridImageB64;
+          }
+
+          // Priority 2: Fall back to tab screenshot
+          if (!screenshotB64) {
+            debugLog('[CaptchaFlux] Grid extraction failed, using tab screenshot');
             const fullDataUrl = await chrome.tabs.captureVisibleTab(null, { format: 'png' });
             screenshotB64 = fullDataUrl.split(',')[1];
           }
