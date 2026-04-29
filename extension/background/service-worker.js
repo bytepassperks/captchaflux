@@ -710,6 +710,11 @@ async function solveCaptcha(data, tabId, apiKey) {
   debugLog('[CaptchaFlux] solveCaptcha called:', { captchaType: data.captchaType, hasImage: !!data.imageBase64, hasImageUrl: !!data.imageUrl, hasRect: !!data.captchaRect, tabId });
   setBadge("solving", tabId);
 
+  // MV3 keepalive: periodic Chrome API call prevents service worker termination
+  const keepAlive = setInterval(() => {
+    chrome.storage.local.get(['_keepalive']).catch(() => {});
+  }, 4000);
+
   // Tell content script to show modal
   chrome.tabs.sendMessage(tabId, {
     type: "START_SOLVE",
@@ -906,6 +911,8 @@ async function solveCaptcha(data, tabId, apiKey) {
     });
 
     setTimeout(() => setBadge("idle", tabId), 5000);
+  } finally {
+    clearInterval(keepAlive);
   }
 }
 

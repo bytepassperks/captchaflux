@@ -53,22 +53,27 @@ async function solveImageChallengeWithVision(
 
   console.log(`[Vision] Grid: ${rows}x${cols}=${gridSize}, Target: "${targetObject}", Prompt: "${prompt}", ImageSize: ${imageBase64.length} chars`);
 
-  const visionPrompt = `You are solving a CAPTCHA image grid challenge.
+  const isTileGrid = gridSize === 16; // 4x4 grids are usually one image split into tiles
 
-The image is a ${rows}x${cols} grid of ${gridSize} separate photographs arranged in rows and columns.
+  const visionPrompt = isTileGrid
+    ? `CAPTCHA grid challenge. The image shows ONE large photograph split into a ${rows}x${cols} grid of ${gridSize} tiles.
 
-I need you to identify which grid cells contain: ${targetObject}
+Target: select all squares containing ${targetObject}
 
-Grid cell numbering (0-indexed):
+Grid numbering (0-indexed, left-to-right, top-to-bottom):
 ${gridMap}
-IMPORTANT RULES:
-- Most challenges have only 2-4 correct cells out of ${gridSize}. Do NOT select all cells.
-- Only select cells where ${targetObject} is CLEARLY and OBVIOUSLY visible as a main subject
-- If a cell shows a street scene but ${targetObject} is not prominently visible, do NOT select it
-- Partial visibility counts only if the object is still clearly recognizable
-- When in doubt, do NOT include the cell
+Select ALL tiles where ANY part of ${targetObject} is visible. For split-image grids, typically 6-12 tiles contain the target.
 
-Return ONLY valid JSON: {"indices": [matching cell numbers], "confidence": 0.85}`;
+Respond with ONLY JSON, no explanation: {"indices": [numbers], "confidence": 0.9}`
+    : `CAPTCHA grid challenge. The image shows a ${rows}x${cols} grid of ${gridSize} SEPARATE photographs.
+
+Target: select all images containing ${targetObject}
+
+Grid numbering (0-indexed, left-to-right, top-to-bottom):
+${gridMap}
+Select cells where ${targetObject} is CLEARLY visible as a main subject. Usually 2-4 cells match.
+
+Respond with ONLY JSON, no explanation: {"indices": [numbers], "confidence": 0.9}`;
 
   // Try PageGrid Claude first
   if (PAGEGRID_API_KEY) {
@@ -82,7 +87,7 @@ Return ONLY valid JSON: {"indices": [matching cell numbers], "confidence": 0.85}
         },
         body: JSON.stringify({
           model: "claude-sonnet-4-6",
-          max_tokens: 200,
+          max_tokens: 1024,
           messages: [
             {
               role: "user",
@@ -112,9 +117,10 @@ Return ONLY valid JSON: {"indices": [matching cell numbers], "confidence": 0.85}
         if (jsonMatch) {
           const parsed = JSON.parse(jsonMatch[0]);
           console.log(`[Vision] PageGrid result: indices=${JSON.stringify(parsed.indices)}, confidence=${parsed.confidence}`);
-          // Sanity check: if more than 60% of cells selected, likely wrong
-          if (parsed.indices && parsed.indices.length > gridSize * 0.6) {
-            console.warn(`[Vision] Too many cells selected (${parsed.indices.length}/${gridSize}), likely wrong. Returning empty.`);
+          // For 3x3 grids (separate images), reject if >60% selected
+          // For 4x4 grids (tile grids), allow up to 100% since it's one split image
+          if (!isTileGrid && parsed.indices && parsed.indices.length > gridSize * 0.6) {
+            console.warn(`[Vision] Too many cells for separate-image grid (${parsed.indices.length}/${gridSize}), rejecting`);
             return { indices: [], confidence: 0.1 };
           }
           return {
@@ -139,7 +145,7 @@ Return ONLY valid JSON: {"indices": [matching cell numbers], "confidence": 0.85}
 
       const bedrockBody = JSON.stringify({
         anthropic_version: "bedrock-2023-05-31",
-        max_tokens: 200,
+        max_tokens: 1024,
         messages: [
           {
             role: "user",
@@ -198,8 +204,8 @@ Return ONLY valid JSON: {"indices": [matching cell numbers], "confidence": 0.85}
         if (jsonMatch) {
           const parsed = JSON.parse(jsonMatch[0]);
           console.log(`[Vision] Bedrock result: indices=${JSON.stringify(parsed.indices)}, confidence=${parsed.confidence}`);
-          if (parsed.indices && parsed.indices.length > gridSize * 0.6) {
-            console.warn(`[Vision] Bedrock too many cells (${parsed.indices.length}/${gridSize}), rejecting`);
+          if (!isTileGrid && parsed.indices && parsed.indices.length > gridSize * 0.6) {
+            console.warn(`[Vision] Bedrock too many cells for separate-image grid (${parsed.indices.length}/${gridSize}), rejecting`);
             return { indices: [], confidence: 0.1 };
           }
           return {
