@@ -1,0 +1,239 @@
+/* CaptchaFlux Modal Overlay — Injected into all pages */
+
+.captchaflux-modal {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  z-index: 2147483647;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  color: #e2e8f0;
+  animation: captchaflux-slideIn 0.3s ease-out;
+}
+
+.captchaflux-hidden {
+  display: none !important;
+}
+
+.captchaflux-modal-inner {
+  background: #0f1724;
+  border: 1px solid rgba(91, 140, 255, 0.3);
+  border-radius: 12px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5), 0 0 30px rgba(91, 140, 255, 0.1);
+  width: 320px;
+  overflow: hidden;
+  backdrop-filter: blur(20px);
+}
+
+.captchaflux-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(91, 140, 255, 0.05);
+}
+
+.captchaflux-logo {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.captchaflux-brand {
+  font-weight: 600;
+  font-size: 13px;
+  color: #5b8cff;
+  letter-spacing: 0.02em;
+}
+
+.captchaflux-close {
+  background: none;
+  border: none;
+  color: #64748b;
+  font-size: 20px;
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  transition: all 0.15s;
+}
+
+.captchaflux-close:hover {
+  color: #e2e8f0;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.captchaflux-modal-body {
+  padding: 16px;
+}
+
+.captchaflux-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.captchaflux-spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid rgba(91, 140, 255, 0.2);
+  border-top-color: #5b8cff;
+  border-radius: 50%;
+  animation: captchaflux-spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+
+.captchaflux-status-text {
+  font-weight: 500;
+  font-size: 14px;
+}
+
+.captchaflux-type {
+  font-size: 12px;
+  color: #64748b;
+  margin-bottom: 14px;
+  padding-left: 28px;
+}
+
+.captchaflux-progress {
+  margin-bottom: 14px;
+}
+
+.captchaflux-progress-steps {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+}
+
+.captchaflux-step {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.captchaflux-step span {
+  font-size: 11px;
+  color: #475569;
+  font-weight: 500;
+  transition: color 0.3s;
+}
+
+.captchaflux-step-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #1e293b;
+  border: 2px solid #334155;
+  transition: all 0.3s;
+}
+
+.captchaflux-step.active .captchaflux-step-dot {
+  background: #5b8cff;
+  border-color: #5b8cff;
+  box-shadow: 0 0 10px rgba(91, 140, 255, 0.4);
+}
+
+.captchaflux-step.active span {
+  color: #5b8cff;
+}
+
+.captchaflux-step.completed .captchaflux-step-dot {
+  background: #00e0b8;
+  border-color: #00e0b8;
+}
+
+.captchaflux-step.completed span {
+  color: #00e0b8;
+}
+
+.captchaflux-step.error .captchaflux-step-dot {
+  background: #ff5050;
+  border-color: #ff5050;
+}
+
+.captchaflux-step.error span {
+  color: #ff5050;
+}
+
+.captchaflux-step-line {
+  width: 40px;
+  height: 2px;
+  background: #1e293b;
+  margin: 0 4px;
+  margin-bottom: 22px;
+}
+
+.captchaflux-result {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  background: rgba(0, 224, 184, 0.06);
+  border-radius: 8px;
+  border: 1px solid rgba(0, 224, 184, 0.15);
+}
+
+.captchaflux-result-icon {
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.captchaflux-result-text {
+  font-size: 13px;
+  font-weight: 500;
+  color: #e2e8f0;
+}
+
+.captchaflux-result-meta {
+  font-size: 11px;
+  color: #64748b;
+  margin-top: 2px;
+}
+
+/* Error variant */
+.captchaflux-step.error ~ .captchaflux-result {
+  background: rgba(255, 80, 80, 0.06);
+  border-color: rgba(255, 80, 80, 0.15);
+}
+
+@keyframes captchaflux-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes captchaflux-slideIn {
+  from {
+    opacity: 0;
+    transform: translateY(20px) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* Dark scrollbar for modal */
+.captchaflux-modal ::-webkit-scrollbar {
+  width: 4px;
+}
+
+.captchaflux-modal ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.captchaflux-modal ::-webkit-scrollbar-thumb {
+  background: #334155;
+  border-radius: 2px;
+}

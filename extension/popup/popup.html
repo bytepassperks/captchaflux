@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=380, initial-scale=1.0">
+  <title>CaptchaFlux</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Header -->
+    <div class="header">
+      <div class="logo">
+        <svg width="22" height="22" viewBox="0 0 20 20" fill="none">
+          <circle cx="10" cy="10" r="10" fill="#5B8CFF"/>
+          <path d="M9 4L12 10H10L11 16L8 10H10L9 4Z" fill="white"/>
+        </svg>
+        <span class="brand">CaptchaFlux</span>
+      </div>
+      <div class="header-right">
+        <div class="status-dot" id="statusDot"></div>
+      </div>
+    </div>
+
+    <!-- Login View -->
+    <div id="loginView" class="view">
+      <div class="login-card">
+        <h2>Connect Your Account</h2>
+        <p class="subtitle">Enter your CaptchaFlux API key to activate auto-solving.</p>
+        <div class="input-group">
+          <label for="apiKeyInput">API Key</label>
+          <input type="password" id="apiKeyInput" placeholder="cflux_starter_..." autocomplete="off">
+        </div>
+        <button id="loginBtn" class="btn-primary">
+          <span id="loginBtnText">Activate Extension</span>
+          <div id="loginSpinner" class="spinner hidden"></div>
+        </button>
+        <div id="loginError" class="error-msg hidden"></div>
+        <div class="help-links">
+          <a href="https://captchaflux.onrender.com/dashboard/api" target="_blank">Get API Key</a>
+          <span class="sep">·</span>
+          <a href="https://captchaflux.onrender.com/dashboard/extension" target="_blank">Setup Guide</a>
+        </div>
+      </div>
+    </div>
+
+    <!-- Main View (Authenticated) -->
+    <div id="mainView" class="view hidden">
+      <!-- Toggle -->
+      <div class="toggle-row">
+        <div class="toggle-label">
+          <span class="toggle-title">Auto-Solve</span>
+          <span class="toggle-subtitle" id="toggleSubtitle">Detecting and solving captchas</span>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="enableToggle">
+          <span class="slider"></span>
+        </label>
+      </div>
+
+      <!-- Tier Card -->
+      <div class="tier-card" id="tierCard">
+        <div class="tier-header">
+          <div class="tier-badge" id="tierBadge">Starter</div>
+          <div class="tier-email" id="tierEmail">user@captchaflux.com</div>
+        </div>
+        <div class="usage-bar-container">
+          <div class="usage-label">
+            <span>Usage</span>
+            <span id="usageText">0 / 10,000</span>
+          </div>
+          <div class="usage-bar">
+            <div class="usage-bar-fill" id="usageBarFill" style="width: 0%"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Stats -->
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="stat-value" id="statDetected">0</div>
+          <div class="stat-label">Detected</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value stat-success" id="statSolved">0</div>
+          <div class="stat-label">Solved</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value stat-error" id="statFailed">0</div>
+          <div class="stat-label">Failed</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="statLatency">—</div>
+          <div class="stat-label">Avg Latency</div>
+        </div>
+      </div>
+
+      <!-- Features -->
+      <div class="features-section">
+        <h3>Active Features</h3>
+        <div class="features-list" id="featuresList"></div>
+      </div>
+
+      <!-- Actions -->
+      <div class="actions">
+        <a href="https://captchaflux.onrender.com/dashboard" target="_blank" class="btn-secondary">Dashboard</a>
+        <button id="logoutBtn" class="btn-ghost">Disconnect</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

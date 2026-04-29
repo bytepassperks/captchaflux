@@ -8,6 +8,7 @@ import {
   BarChart3,
   Zap,
   ShieldCheck,
+  Puzzle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -16,6 +17,7 @@ const sidebarLinks = [
   { href: "/dashboard/api", label: "API Keys", icon: Key },
   { href: "/dashboard/benchmarks", label: "Benchmarks", icon: BarChart3 },
   { href: "/dashboard/verify", label: "Verify Site", icon: ShieldCheck },
+  { href: "/dashboard/extension", label: "Chrome Extension", icon: Puzzle },
 ];
 
 export function Sidebar() {
