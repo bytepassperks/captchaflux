@@ -118,7 +118,7 @@
   }
 
   function getCaptchaImageElement() {
-    // For MTCaptcha and text/image captchas, find the captcha image
+    // Direct selectors for captcha images
     const candidates = [
       'img[src*="captcha"]',
       'img[id*="captcha"]',
@@ -126,12 +126,30 @@
       'img[alt*="captcha"]',
       "#mtcap-image img",
       ".mtcap-image img",
-      'iframe[src*="mtcaptcha"] img',
+      'img[src*="mtcap"]',
     ];
 
     for (const sel of candidates) {
       const el = document.querySelector(sel);
       if (el) return el;
+    }
+
+    // Find images near captcha input fields (sibling/adjacent images)
+    const inputEl = getCaptchaInputElement();
+    if (inputEl) {
+      const parent = inputEl.closest("div, form, fieldset, section");
+      if (parent) {
+        const nearbyImg = parent.querySelector("img");
+        if (nearbyImg) return nearbyImg;
+      }
+      // Check next/previous siblings
+      let sibling = inputEl.nextElementSibling;
+      while (sibling) {
+        if (sibling.tagName === "IMG") return sibling;
+        const img = sibling.querySelector?.("img");
+        if (img) return img;
+        sibling = sibling.nextElementSibling;
+      }
     }
 
     // Check iframes for MTCaptcha
@@ -225,27 +243,41 @@
     return results[0] || null;
   }
 
-  function captureElementScreenshot(element) {
-    return new Promise((resolve) => {
-      if (!element || element.tagName !== "IMG") {
-        resolve(null);
-        return;
-      }
+  async function captureElementScreenshot(element) {
+    if (!element || element.tagName !== "IMG") return null;
 
+    // Method 1: Canvas (works for same-origin images)
+    try {
       const canvas = document.createElement("canvas");
       const ctx = canvas.getContext("2d");
       canvas.width = element.naturalWidth || element.width;
       canvas.height = element.naturalHeight || element.height;
+      ctx.drawImage(element, 0, 0);
+      const dataUrl = canvas.toDataURL("image/png");
+      return dataUrl.split(",")[1];
+    } catch {
+      // Tainted canvas — cross-origin image
+    }
 
-      try {
-        ctx.drawImage(element, 0, 0);
-        const dataUrl = canvas.toDataURL("image/png");
-        resolve(dataUrl.split(",")[1]); // Return base64 only
-      } catch {
-        // Cross-origin image
-        resolve(null);
+    // Method 2: Fetch the image URL directly (content script shares page origin)
+    try {
+      const imgUrl = element.src || element.getAttribute("src");
+      if (imgUrl) {
+        const absoluteUrl = new URL(imgUrl, window.location.href).href;
+        const resp = await fetch(absoluteUrl, { credentials: "include" });
+        const blob = await resp.blob();
+        return await new Promise((resolve) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result.split(",")[1]);
+          reader.onerror = () => resolve(null);
+          reader.readAsDataURL(blob);
+        });
       }
-    });
+    } catch {
+      // Fetch failed
+    }
+
+    return null;
   }
 
   // Main detection loop
@@ -270,11 +302,37 @@
     if (detection && !lastDetection) {
       lastDetection = detection;
 
-      // Get captcha image if available
+      // Get captcha image if available (works for same-origin images)
       const imgEl = getCaptchaImageElement();
       let imageBase64 = null;
+      let imageUrl = null;
+      let captchaRect = null;
       if (imgEl) {
         imageBase64 = await captureElementScreenshot(imgEl);
+        imageUrl = imgEl.src || imgEl.getAttribute("src");
+        if (imageUrl) {
+          imageUrl = new URL(imageUrl, window.location.href).href;
+        }
+      }
+
+      // For cross-origin iframes (MTCaptcha etc), get iframe bounding rect
+      // so background can use captureVisibleTab + crop
+      if (!imageBase64) {
+        const captchaEl =
+          detection.element ||
+          document.querySelector(
+            'iframe[src*="mtcaptcha"], iframe[src*="captcha"], iframe[src*="recaptcha"], iframe[src*="hcaptcha"], iframe[src*="turnstile"]'
+          );
+        if (captchaEl) {
+          const rect = captchaEl.getBoundingClientRect();
+          captchaRect = {
+            x: Math.round(rect.x),
+            y: Math.round(rect.y),
+            width: Math.round(rect.width),
+            height: Math.round(rect.height),
+            dpr: window.devicePixelRatio || 1,
+          };
+        }
       }
 
       // Get input element info
@@ -288,8 +346,10 @@
           sitekey: detection.sitekey,
           pageUrl: window.location.href,
           confidence: detection.confidence,
-          hasImage: !!imageBase64,
+          hasImage: !!imageBase64 || !!imageUrl || !!captchaRect,
           imageBase64: imageBase64,
+          imageUrl: imageUrl,
+          captchaRect: captchaRect,
           hasInput: !!inputEl,
         },
       });

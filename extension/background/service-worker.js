@@ -95,6 +95,137 @@ async function handleCaptchaDetected(data, tabId) {
   await solveCaptcha(data, tabId, settings.apiKey);
 }
 
+// Capture visible tab and crop to a specific rect using OffscreenCanvas
+async function captureTabCaptcha(tabId, rect) {
+  const dataUrl = await chrome.tabs.captureVisibleTab(null, { format: "png" });
+  const resp = await fetch(dataUrl);
+  const blob = await resp.blob();
+
+  const dpr = rect.dpr || 1;
+  const sx = Math.max(0, Math.round(rect.x * dpr));
+  const sy = Math.max(0, Math.round(rect.y * dpr));
+  const sw = Math.max(1, Math.round(rect.width * dpr));
+  const sh = Math.max(1, Math.round(rect.height * dpr));
+
+  const bitmap = await createImageBitmap(blob, sx, sy, sw, sh);
+  const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(bitmap, 0, 0);
+  const resultBlob = await canvas.convertToBlob({ type: "image/png" });
+  const buffer = await resultBlob.arrayBuffer();
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+// Fill captcha answer in all frames (handles cross-origin iframes)
+async function fillCaptchaInAllFrames(tabId, token, captchaType) {
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      func: (tkn, cType) => {
+        // Try filling in every frame — the right frame will have the input
+        const selectors = [
+          'input[name*="captcha" i]',
+          'input[id*="captcha" i]',
+          'input[class*="captcha" i]',
+          'input[placeholder*="captcha" i]',
+          'input[placeholder*="code" i]',
+          'input[aria-label*="captcha" i]',
+          ".mtcap-inputbox input",
+          "#mtcap-inputbox input",
+          'input[name*="mtcap" i]',
+          'input[id*="mtcap" i]',
+        ];
+
+        for (const sel of selectors) {
+          const input = document.querySelector(sel);
+          if (input && input.type !== "hidden" && input.offsetParent !== null) {
+            // Clear existing value
+            input.value = "";
+            input.focus();
+
+            // Simulate typing character by character for validation
+            for (const char of tkn) {
+              input.value += char;
+              input.dispatchEvent(
+                new KeyboardEvent("keydown", {
+                  key: char,
+                  code: "Key" + char.toUpperCase(),
+                  bubbles: true,
+                })
+              );
+              input.dispatchEvent(
+                new KeyboardEvent("keypress", {
+                  key: char,
+                  code: "Key" + char.toUpperCase(),
+                  bubbles: true,
+                })
+              );
+              input.dispatchEvent(
+                new InputEvent("input", { data: char, bubbles: true })
+              );
+              input.dispatchEvent(
+                new KeyboardEvent("keyup", {
+                  key: char,
+                  code: "Key" + char.toUpperCase(),
+                  bubbles: true,
+                })
+              );
+            }
+
+            input.dispatchEvent(new Event("change", { bubbles: true }));
+            return true;
+          }
+        }
+
+        // Also handle token-based response fields in the main frame
+        const tokenFields = [
+          "#g-recaptcha-response",
+          'textarea[name="g-recaptcha-response"]',
+          'textarea[name="h-captcha-response"]',
+          'input[name="cf-turnstile-response"]',
+          'input[name="mtcaptcha-verifiedtoken"]',
+        ];
+        for (const sel of tokenFields) {
+          const field = document.querySelector(sel);
+          if (field) {
+            field.value = tkn;
+            field.dispatchEvent(new Event("input", { bubbles: true }));
+            field.dispatchEvent(new Event("change", { bubbles: true }));
+          }
+        }
+
+        // Try triggering captcha callbacks
+        if (cType === "recaptcha_v2" || cType === "recaptcha_v3") {
+          const el = document.querySelector(".g-recaptcha");
+          if (el) {
+            const cbName = el.getAttribute("data-callback");
+            if (cbName && typeof window[cbName] === "function") {
+              window[cbName](tkn);
+            }
+          }
+          try {
+            if (window.grecaptcha?.enterprise) {
+              // reCAPTCHA Enterprise
+            } else if (window.grecaptcha) {
+              window.grecaptcha.execute?.();
+            }
+          } catch {}
+        }
+
+        return false;
+      },
+      args: [token, captchaType],
+    });
+  } catch {
+    // executeScript failed — tab may have navigated
+  }
+}
+
 async function solveCaptcha(data, tabId, apiKey) {
   setBadge("solving", tabId);
 
@@ -117,9 +248,37 @@ async function solveCaptcha(data, tabId, apiKey) {
       pageUrl: data.pageUrl,
     };
 
-    // Include image data for OCR-solvable captchas
-    if (data.imageBase64) {
-      requestBody.captchaImageBase64 = data.imageBase64;
+    // Build image data from best available source
+    let imageBase64 = data.imageBase64;
+
+    // Fallback 1: Fetch image URL from background (may get different image for dynamic captchas)
+    if (!imageBase64 && data.imageUrl) {
+      try {
+        const imgResp = await fetch(data.imageUrl);
+        const buffer = await imgResp.arrayBuffer();
+        const bytes = new Uint8Array(buffer);
+        let binary = "";
+        for (let i = 0; i < bytes.length; i++) {
+          binary += String.fromCharCode(bytes[i]);
+        }
+        imageBase64 = btoa(binary);
+      } catch {
+        // Background fetch failed
+      }
+    }
+
+    // Fallback 2: Screenshot visible tab and crop to captcha area
+    // This is the most reliable method — captures exactly what user sees
+    if (!imageBase64 && data.captchaRect) {
+      try {
+        imageBase64 = await captureTabCaptcha(tabId, data.captchaRect);
+      } catch {
+        // Tab capture failed
+      }
+    }
+
+    if (imageBase64) {
+      requestBody.captchaImageBase64 = imageBase64;
     }
 
     const resp = await fetch(`${API_BASE}/api/extension/solve`, {
@@ -136,7 +295,10 @@ async function solveCaptcha(data, tabId, apiKey) {
       sessionStats.totalLatency += solveTime;
       setBadge("solved", tabId);
 
-      // Send result to content script
+      // Fill the answer in ALL frames (handles cross-origin iframes)
+      await fillCaptchaInAllFrames(tabId, result.token, data.captchaType);
+
+      // Also notify content script for modal update
       chrome.tabs.sendMessage(tabId, {
         type: "SOLVE_RESULT",
         data: {
