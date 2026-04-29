@@ -158,7 +158,7 @@ Return ONLY valid JSON: {"indices": [matching cell numbers], "confidence": 0.85}
         ],
       });
 
-      const modelId = "us.anthropic.claude-3-haiku-20240307-v1:0";
+      const modelId = "us.anthropic.claude-sonnet-4-6";
       const url = `https://bedrock-runtime.${AWS_REGION}.amazonaws.com/model/${modelId}/invoke`;
 
       const signer = new SignatureV4({
@@ -193,14 +193,23 @@ Return ONLY valid JSON: {"indices": [matching cell numbers], "confidence": 0.85}
       if (resp.ok) {
         const data = await resp.json();
         const text = data.content?.[0]?.text || "";
+        console.log(`[Vision] Bedrock raw response: ${text.substring(0, 500)}`);
         const jsonMatch = text.match(/\{[\s\S]*?\}/);
         if (jsonMatch) {
           const parsed = JSON.parse(jsonMatch[0]);
+          console.log(`[Vision] Bedrock result: indices=${JSON.stringify(parsed.indices)}, confidence=${parsed.confidence}`);
+          if (parsed.indices && parsed.indices.length > gridSize * 0.6) {
+            console.warn(`[Vision] Bedrock too many cells (${parsed.indices.length}/${gridSize}), rejecting`);
+            return { indices: [], confidence: 0.1 };
+          }
           return {
             indices: parsed.indices || [],
             confidence: parsed.confidence || 0.7,
           };
         }
+      } else {
+        const errText = await resp.text();
+        console.error(`[Vision] Bedrock API error ${resp.status}: ${errText.substring(0, 300)}`);
       }
     } catch (e) {
       console.error("AWS Bedrock vision failed:", e);
