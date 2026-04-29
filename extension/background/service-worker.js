@@ -299,7 +299,69 @@ async function solveCaptcha(data, tabId, apiKey) {
     let imageBase64 = data.imageBase64;
     debugLog('[CaptchaFlux] imageBase64 from content:', imageBase64 ? `${imageBase64.length} chars` : 'null');
 
-    // Fallback 1: Fetch image URL from background (may get different image for dynamic captchas)
+    // Priority 1: Extract captcha image directly from inside cross-origin iframe
+    // This gets ONLY the captcha image (not the whole widget) for much better OCR accuracy
+    if (!imageBase64) {
+      debugLog('[CaptchaFlux] Trying direct iframe image extraction...');
+      try {
+        const extractResults = await chrome.scripting.executeScript({
+          target: { tabId, allFrames: true },
+          func: () => {
+            // MTCaptcha: image is a <div> with background-image or hidden <img>
+            const imgEl = document.querySelector('img[id*="mtcap-image"]');
+            if (imgEl && imgEl.src && imgEl.src.startsWith('data:image')) {
+              return { src: imgEl.src, method: 'img-tag' };
+            }
+            const bgDiv = document.querySelector('.mtcap-image-mini, .mtcap-image, [id*="mtcap-image"]');
+            if (bgDiv) {
+              const bg = bgDiv.style.backgroundImage || getComputedStyle(bgDiv).backgroundImage;
+              if (bg && bg.includes('data:image')) {
+                const match = bg.match(/url\(["']?(data:image[^"')]+)["']?\)/);
+                if (match) return { src: match[1], method: 'bg-image' };
+              }
+            }
+            // Generic: look for captcha images
+            const captchaImgs = document.querySelectorAll('img[src*="captcha"], img[id*="captcha"], img[class*="captcha"]');
+            for (const img of captchaImgs) {
+              if (img.src) return { src: img.src, method: 'generic-img' };
+            }
+            return null;
+          },
+        });
+        for (const frame of extractResults) {
+          if (frame.result && frame.result.src) {
+            const src = frame.result.src;
+            debugLog('[CaptchaFlux] Got captcha image from iframe via', frame.result.method);
+            if (src.startsWith('data:image')) {
+              // Extract base64 from data URI
+              const b64Part = src.split(',')[1];
+              if (b64Part) {
+                imageBase64 = b64Part;
+                debugLog('[CaptchaFlux] Extracted image base64:', imageBase64.length, 'chars');
+              }
+            } else if (src.startsWith('http')) {
+              // Fetch external URL
+              try {
+                const imgResp = await fetch(src);
+                const buffer = await imgResp.arrayBuffer();
+                const bytes = new Uint8Array(buffer);
+                let binary = "";
+                for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+                imageBase64 = btoa(binary);
+                debugLog('[CaptchaFlux] Fetched external captcha image:', imageBase64.length, 'chars');
+              } catch (e) {
+                debugLog('[CaptchaFlux] Failed to fetch captcha image URL:', e.message);
+              }
+            }
+            break;
+          }
+        }
+      } catch (e) {
+        debugLog('[CaptchaFlux] iframe image extraction failed:', e.message);
+      }
+    }
+
+    // Fallback 1: Fetch image URL from background
     if (!imageBase64 && data.imageUrl) {
       debugLog('[CaptchaFlux] Trying imageUrl fetch:', data.imageUrl);
       try {
@@ -318,7 +380,6 @@ async function solveCaptcha(data, tabId, apiKey) {
     }
 
     // Fallback 2: Screenshot visible tab and crop to captcha area
-    // This is the most reliable method — captures exactly what user sees
     if (!imageBase64 && data.captchaRect) {
       debugLog('[CaptchaFlux] Trying tab screenshot, rect:', data.captchaRect);
       try {
