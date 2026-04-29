@@ -404,14 +404,11 @@ async function solveTokenCaptchaClientSide(data, tabId) {
           const cells = table ? table.querySelectorAll('td') : [];
           const gridSize = cells.length;
 
-          // Extract cell image URLs (will be fetched by service worker)
-          let cellImageUrls = [];
+          // Try canvas composite (works if images are same-origin as iframe)
           let gridImageB64 = null;
           try {
             const imgs = table ? table.querySelectorAll('td img') : [];
             if (imgs.length > 0 && imgs.length === gridSize) {
-              cellImageUrls = Array.from(imgs).map(img => img.src).filter(Boolean);
-              // Try canvas composite (works if same-origin)
               const rows = Math.round(Math.sqrt(gridSize));
               const cols = Math.ceil(gridSize / rows);
               const cellW = imgs[0].naturalWidth || imgs[0].width || 100;
@@ -429,7 +426,7 @@ async function solveTokenCaptchaClientSide(data, tabId) {
             }
           } catch (e) {}
 
-          return { hasChallenge: true, prompt: text.trim(), gridSize, frame: location.href, type: 'recaptcha_image', gridImageB64, cellImageUrls };
+          return { hasChallenge: true, prompt: text.trim(), gridSize, frame: location.href, type: 'recaptcha_image', gridImageB64 };
         }
         // hCaptcha image challenge
         const hcPrompt = document.querySelector('.prompt-text, .challenge-header');
@@ -475,12 +472,10 @@ async function solveTokenCaptchaClientSide(data, tabId) {
                   const cells = table ? table.querySelectorAll('td') : [];
                   const gridSize = cells.length;
 
-                  let cellImageUrls = [];
                   let gridImageB64 = null;
                   try {
                     const imgs = table ? table.querySelectorAll('td img') : [];
                     if (imgs.length > 0 && imgs.length === gridSize) {
-                      cellImageUrls = Array.from(imgs).map(img => img.src).filter(Boolean);
                       const rows = Math.round(Math.sqrt(gridSize));
                       const cols = Math.ceil(gridSize / rows);
                       const cellW = imgs[0].naturalWidth || imgs[0].width || 100;
@@ -498,7 +493,7 @@ async function solveTokenCaptchaClientSide(data, tabId) {
                     }
                   } catch (e) {}
 
-                  return { hasChallenge: true, prompt: text.trim(), gridSize, frame: location.href, type: 'recaptcha_image', gridImageB64, cellImageUrls };
+                  return { hasChallenge: true, prompt: text.trim(), gridSize, frame: location.href, type: 'recaptcha_image', gridImageB64 };
                 }
                 const hcPrompt = document.querySelector('.prompt-text, .challenge-header');
                 if (hcPrompt) {
@@ -528,20 +523,7 @@ async function solveTokenCaptchaClientSide(data, tabId) {
             screenshotB64 = activeChallenge.gridImageB64;
           }
 
-          // Priority 2: Fetch cell images from service worker (bypasses canvas taint)
-          if (!screenshotB64 && activeChallenge.cellImageUrls && activeChallenge.cellImageUrls.length > 0) {
-            debugLog('[CaptchaFlux] Canvas tainted, fetching', activeChallenge.cellImageUrls.length, 'cell images from SW');
-            try {
-              screenshotB64 = await fetchAndCompositeCellImages(activeChallenge.cellImageUrls, activeChallenge.gridSize);
-              if (screenshotB64) {
-                debugLog('[CaptchaFlux] SW-composited grid image:', screenshotB64.length, 'chars');
-              }
-            } catch (e) {
-              debugLog('[CaptchaFlux] SW cell fetch failed:', e.message);
-            }
-          }
-
-          // Priority 3: Fall back to cropped tab screenshot (hide modal first)
+          // Priority 2: Fall back to cropped tab screenshot (hide modal first)
           if (!screenshotB64) {
             debugLog('[CaptchaFlux] All extraction failed, using cropped tab screenshot');
 
@@ -757,65 +739,6 @@ async function solveTokenCaptchaClientSide(data, tabId) {
   }
 
   return { success: false, error: 'Captcha checkbox clicked but could not solve image challenge automatically' };
-}
-
-// Fetch individual cell images by URL (from service worker, bypassing CORS)
-// and composite them into a single grid image using OffscreenCanvas
-async function fetchAndCompositeCellImages(urls, gridSize) {
-  const rows = Math.round(Math.sqrt(gridSize)) || 3;
-  const cols = Math.ceil(gridSize / rows);
-
-  // Fetch all images in parallel with 8s timeout per image
-  const blobPromises = urls.map(async (url) => {
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 8000);
-      const resp = await fetch(url, { credentials: 'omit', signal: controller.signal });
-      clearTimeout(timeoutId);
-      if (!resp.ok) return null;
-      return await resp.blob();
-    } catch (e) {
-      return null;
-    }
-  });
-  const blobs = await Promise.all(blobPromises);
-
-  // Convert blobs to ImageBitmap
-  const bitmapPromises = blobs.map(async (blob) => {
-    if (!blob) return null;
-    try {
-      return await createImageBitmap(blob);
-    } catch (e) {
-      return null;
-    }
-  });
-  const bitmaps = await Promise.all(bitmapPromises);
-
-  const validBitmaps = bitmaps.filter(Boolean);
-  if (validBitmaps.length === 0) return null;
-
-  // Use first bitmap's dimensions for cell size
-  const cellW = validBitmaps[0].width;
-  const cellH = validBitmaps[0].height;
-
-  const canvas = new OffscreenCanvas(cols * cellW, rows * cellH);
-  const ctx = canvas.getContext('2d');
-
-  for (let i = 0; i < bitmaps.length; i++) {
-    if (!bitmaps[i]) continue;
-    const r = Math.floor(i / cols);
-    const c = i % cols;
-    ctx.drawImage(bitmaps[i], c * cellW, r * cellH, cellW, cellH);
-  }
-
-  const outputBlob = await canvas.convertToBlob({ type: 'image/png' });
-  const arrayBuf = await outputBlob.arrayBuffer();
-  const bytes = new Uint8Array(arrayBuf);
-  let binary = '';
-  for (let i = 0; i < bytes.length; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  return btoa(binary);
 }
 
 async function solveCaptcha(data, tabId, apiKey) {
