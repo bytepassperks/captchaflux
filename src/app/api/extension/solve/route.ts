@@ -56,24 +56,35 @@ async function solveImageChallengeWithVision(
   const isTileGrid = gridSize === 16; // 4x4 grids are usually one image split into tiles
 
   const visionPrompt = isTileGrid
-    ? `CAPTCHA grid challenge. The image shows ONE large photograph split into a ${rows}x${cols} grid of ${gridSize} tiles.
+    ? `You are analyzing a CAPTCHA image challenge. The image shows ONE large photograph divided into a ${rows}x${cols} grid (${gridSize} tiles total).
 
-Target: select all squares containing ${targetObject}
-
-Grid numbering (0-indexed, left-to-right, top-to-bottom):
-${gridMap}
-Select ALL tiles where ANY part of ${targetObject} is visible. For split-image grids, typically 6-12 tiles contain the target.
-
-Respond with ONLY JSON, no explanation: {"indices": [numbers], "confidence": 0.9}`
-    : `CAPTCHA grid challenge. The image shows a ${rows}x${cols} grid of ${gridSize} SEPARATE photographs.
-
-Target: select all images containing ${targetObject}
+Task: Select ONLY the tiles that contain ${targetObject}.
 
 Grid numbering (0-indexed, left-to-right, top-to-bottom):
 ${gridMap}
-Select cells where ${targetObject} is CLEARLY visible as a main subject. Usually 2-4 cells match.
 
-Respond with ONLY JSON, no explanation: {"indices": [numbers], "confidence": 0.9}`;
+IMPORTANT RULES:
+- Only select tiles where ${targetObject} is actually visible in that specific tile
+- Do NOT select tiles that show only background, sky, road, buildings, etc.
+- The target object typically occupies 3-8 tiles out of 16. NEVER select all 16.
+- Look carefully at each tile individually before deciding
+- If the image also contains text like "Select all squares with...", IGNORE that text and focus on the actual grid images
+
+Respond with ONLY JSON: {"indices": [numbers], "confidence": 0.9}`
+    : `You are analyzing a CAPTCHA image challenge. The image shows a ${rows}x${cols} grid of ${gridSize} SEPARATE photographs.
+
+Task: Select ONLY the images that clearly show ${targetObject}.
+
+Grid numbering (0-indexed, left-to-right, top-to-bottom):
+${gridMap}
+
+IMPORTANT RULES:
+- Only select images where ${targetObject} is clearly the main subject or prominently visible
+- Usually 2-4 images match. NEVER select all images.
+- Look at each image individually
+- If the image also contains text like "Select all images with...", IGNORE that text
+
+Respond with ONLY JSON: {"indices": [numbers], "confidence": 0.9}`;
 
   // Try PageGrid Claude first
   if (PAGEGRID_API_KEY) {
@@ -117,8 +128,15 @@ Respond with ONLY JSON, no explanation: {"indices": [numbers], "confidence": 0.9
         if (jsonMatch) {
           const parsed = JSON.parse(jsonMatch[0]);
           console.log(`[Vision] PageGrid result: indices=${JSON.stringify(parsed.indices)}, confidence=${parsed.confidence}`);
-          // For 3x3 grids (separate images), reject if >60% selected
-          // For 4x4 grids (tile grids), allow up to 100% since it's one split image
+          // Sanity checks: reject if too many cells selected
+          if (parsed.indices && parsed.indices.length >= gridSize) {
+            console.warn(`[Vision] ALL cells selected (${parsed.indices.length}/${gridSize}), rejecting — this is always wrong`);
+            return { indices: [], confidence: 0.1 };
+          }
+          if (isTileGrid && parsed.indices && parsed.indices.length > gridSize * 0.75) {
+            console.warn(`[Vision] Too many tiles selected for tile grid (${parsed.indices.length}/${gridSize}), rejecting`);
+            return { indices: [], confidence: 0.1 };
+          }
           if (!isTileGrid && parsed.indices && parsed.indices.length > gridSize * 0.6) {
             console.warn(`[Vision] Too many cells for separate-image grid (${parsed.indices.length}/${gridSize}), rejecting`);
             return { indices: [], confidence: 0.1 };
@@ -204,6 +222,14 @@ Respond with ONLY JSON, no explanation: {"indices": [numbers], "confidence": 0.9
         if (jsonMatch) {
           const parsed = JSON.parse(jsonMatch[0]);
           console.log(`[Vision] Bedrock result: indices=${JSON.stringify(parsed.indices)}, confidence=${parsed.confidence}`);
+          if (parsed.indices && parsed.indices.length >= gridSize) {
+            console.warn(`[Vision] Bedrock ALL cells selected (${parsed.indices.length}/${gridSize}), rejecting`);
+            return { indices: [], confidence: 0.1 };
+          }
+          if (isTileGrid && parsed.indices && parsed.indices.length > gridSize * 0.75) {
+            console.warn(`[Vision] Bedrock too many tiles for tile grid (${parsed.indices.length}/${gridSize}), rejecting`);
+            return { indices: [], confidence: 0.1 };
+          }
           if (!isTileGrid && parsed.indices && parsed.indices.length > gridSize * 0.6) {
             console.warn(`[Vision] Bedrock too many cells for separate-image grid (${parsed.indices.length}/${gridSize}), rejecting`);
             return { indices: [], confidence: 0.1 };
