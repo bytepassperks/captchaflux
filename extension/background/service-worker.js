@@ -395,7 +395,7 @@ async function solveTokenCaptchaClientSide(data, tabId) {
     // Detect challenge AND extract grid image directly from inside the iframe
     const challengeInfo = await chrome.scripting.executeScript({
       target: { tabId, allFrames: true },
-      func: () => {
+      func: async () => {
         // reCAPTCHA image challenge
         const prompt = document.querySelector('.rc-imageselect-desc-wrapper, .rc-imageselect-desc, .rc-imageselect-instructions');
         if (prompt) {
@@ -404,32 +404,69 @@ async function solveTokenCaptchaClientSide(data, tabId) {
           const cells = table ? table.querySelectorAll('td') : [];
           const gridSize = cells.length;
 
-          // Extract individual cell image URLs for high-quality fetch from service worker
+          // Extract grid image: fetch cell images within bframe context (has correct cookies)
           let gridImageB64 = null;
-          let cellImageUrls = [];
           try {
             const imgs = table ? table.querySelectorAll('td img') : [];
             if (imgs.length > 0 && imgs.length === gridSize) {
-              cellImageUrls = Array.from(imgs).map(img => img.src).filter(Boolean);
-              // Try canvas composite as primary approach
-              const rows = Math.round(Math.sqrt(gridSize));
-              const cols = Math.ceil(gridSize / rows);
-              const cellW = imgs[0].naturalWidth || imgs[0].width || 100;
-              const cellH = imgs[0].naturalHeight || imgs[0].height || 100;
-              const canvas = document.createElement('canvas');
-              canvas.width = cols * cellW;
-              canvas.height = rows * cellH;
-              const ctx = canvas.getContext('2d');
-              for (let i = 0; i < imgs.length; i++) {
-                const row = Math.floor(i / cols);
-                const col = i % cols;
-                try { ctx.drawImage(imgs[i], col * cellW, row * cellH, cellW, cellH); } catch (e) {}
+              const urls = Array.from(imgs).map(img => img.src).filter(Boolean);
+              if (urls.length === gridSize) {
+                // Fetch all images as blobs within the bframe origin (has session cookies)
+                const fetchPromises = urls.map(url =>
+                  fetch(url, { credentials: 'include' })
+                    .then(r => r.blob())
+                    .then(blob => new Promise((resolve) => {
+                      const reader = new FileReader();
+                      reader.onloadend = () => resolve(reader.result);
+                      reader.readAsDataURL(blob);
+                    }))
+                    .catch(() => null)
+                );
+                const dataUrls = await Promise.all(fetchPromises);
+                const validUrls = dataUrls.filter(Boolean);
+
+                if (validUrls.length === gridSize) {
+                  // Composite all cell images onto a single canvas
+                  const rows = Math.round(Math.sqrt(gridSize));
+                  const cols = Math.ceil(gridSize / rows);
+
+                  // Load first image to get dimensions
+                  const firstImg = await new Promise((resolve) => {
+                    const img = new Image();
+                    img.onload = () => resolve(img);
+                    img.onerror = () => resolve(null);
+                    img.src = validUrls[0];
+                  });
+                  const cellW = firstImg ? firstImg.width : 100;
+                  const cellH = firstImg ? firstImg.height : 100;
+
+                  const canvas = document.createElement('canvas');
+                  canvas.width = cols * cellW;
+                  canvas.height = rows * cellH;
+                  const ctx = canvas.getContext('2d');
+
+                  // Draw each cell image
+                  for (let i = 0; i < validUrls.length; i++) {
+                    const cellImg = await new Promise((resolve) => {
+                      const img = new Image();
+                      img.onload = () => resolve(img);
+                      img.onerror = () => resolve(null);
+                      img.src = validUrls[i];
+                    });
+                    if (cellImg) {
+                      const r = Math.floor(i / cols);
+                      const c = i % cols;
+                      ctx.drawImage(cellImg, c * cellW, r * cellH, cellW, cellH);
+                    }
+                  }
+
+                  try { gridImageB64 = canvas.toDataURL('image/jpeg', 0.9).split(',')[1]; } catch (e) {}
+                }
               }
-              try { gridImageB64 = canvas.toDataURL('image/png').split(',')[1]; } catch (e) {}
             }
           } catch (e) {}
 
-          return { hasChallenge: true, prompt: text.trim(), gridSize, frame: location.href, type: 'recaptcha_image', gridImageB64, cellImageUrls };
+          return { hasChallenge: true, prompt: text.trim(), gridSize, frame: location.href, type: 'recaptcha_image', gridImageB64 };
         }
         // hCaptcha image challenge
         const hcPrompt = document.querySelector('.prompt-text, .challenge-header');
@@ -464,10 +501,10 @@ async function solveTokenCaptchaClientSide(data, tabId) {
               return { success: true, token: midToken, engine: 'vision_challenge' };
             }
 
-            // Re-detect challenge with grid image extraction
+            // Re-detect challenge with grid image extraction (same logic as initial detection)
             const newChallengeInfo = await chrome.scripting.executeScript({
               target: { tabId, allFrames: true },
-              func: () => {
+              func: async () => {
                 const prompt = document.querySelector('.rc-imageselect-desc-wrapper, .rc-imageselect-desc, .rc-imageselect-instructions');
                 if (prompt) {
                   const text = prompt.innerText || prompt.textContent || '';
@@ -475,31 +512,59 @@ async function solveTokenCaptchaClientSide(data, tabId) {
                   const cells = table ? table.querySelectorAll('td') : [];
                   const gridSize = cells.length;
 
-                  // Extract cell image URLs + try canvas composite
                   let gridImageB64 = null;
-                  let cellImageUrls = [];
                   try {
                     const imgs = table ? table.querySelectorAll('td img') : [];
                     if (imgs.length > 0 && imgs.length === gridSize) {
-                      cellImageUrls = Array.from(imgs).map(img => img.src).filter(Boolean);
-                      const rows = Math.round(Math.sqrt(gridSize));
-                      const cols = Math.ceil(gridSize / rows);
-                      const cellW = imgs[0].naturalWidth || imgs[0].width || 100;
-                      const cellH = imgs[0].naturalHeight || imgs[0].height || 100;
-                      const canvas = document.createElement('canvas');
-                      canvas.width = cols * cellW;
-                      canvas.height = rows * cellH;
-                      const ctx = canvas.getContext('2d');
-                      for (let i = 0; i < imgs.length; i++) {
-                        const row = Math.floor(i / cols);
-                        const col = i % cols;
-                        try { ctx.drawImage(imgs[i], col * cellW, row * cellH, cellW, cellH); } catch (e) {}
+                      const urls = Array.from(imgs).map(img => img.src).filter(Boolean);
+                      if (urls.length === gridSize) {
+                        const fetchPromises = urls.map(url =>
+                          fetch(url, { credentials: 'include' })
+                            .then(r => r.blob())
+                            .then(blob => new Promise((resolve) => {
+                              const reader = new FileReader();
+                              reader.onloadend = () => resolve(reader.result);
+                              reader.readAsDataURL(blob);
+                            }))
+                            .catch(() => null)
+                        );
+                        const dataUrls = await Promise.all(fetchPromises);
+                        const validUrls = dataUrls.filter(Boolean);
+                        if (validUrls.length === gridSize) {
+                          const rows = Math.round(Math.sqrt(gridSize));
+                          const cols = Math.ceil(gridSize / rows);
+                          const firstImg = await new Promise((resolve) => {
+                            const img = new Image();
+                            img.onload = () => resolve(img);
+                            img.onerror = () => resolve(null);
+                            img.src = validUrls[0];
+                          });
+                          const cellW = firstImg ? firstImg.width : 100;
+                          const cellH = firstImg ? firstImg.height : 100;
+                          const canvas = document.createElement('canvas');
+                          canvas.width = cols * cellW;
+                          canvas.height = rows * cellH;
+                          const ctx = canvas.getContext('2d');
+                          for (let i = 0; i < validUrls.length; i++) {
+                            const cellImg = await new Promise((resolve) => {
+                              const img = new Image();
+                              img.onload = () => resolve(img);
+                              img.onerror = () => resolve(null);
+                              img.src = validUrls[i];
+                            });
+                            if (cellImg) {
+                              const r = Math.floor(i / cols);
+                              const c = i % cols;
+                              ctx.drawImage(cellImg, c * cellW, r * cellH, cellW, cellH);
+                            }
+                          }
+                          try { gridImageB64 = canvas.toDataURL('image/jpeg', 0.9).split(',')[1]; } catch (e) {}
+                        }
                       }
-                      try { gridImageB64 = canvas.toDataURL('image/png').split(',')[1]; } catch (e) {}
                     }
                   } catch (e) {}
 
-                  return { hasChallenge: true, prompt: text.trim(), gridSize, frame: location.href, type: 'recaptcha_image', gridImageB64, cellImageUrls };
+                  return { hasChallenge: true, prompt: text.trim(), gridSize, frame: location.href, type: 'recaptcha_image', gridImageB64 };
                 }
                 const hcPrompt = document.querySelector('.prompt-text, .challenge-header');
                 if (hcPrompt) {
@@ -529,20 +594,7 @@ async function solveTokenCaptchaClientSide(data, tabId) {
             screenshotB64 = activeChallenge.gridImageB64;
           }
 
-          // Priority 2: Fetch individual cell images from service worker (bypasses CORS/taint)
-          if (!screenshotB64 && activeChallenge.cellImageUrls && activeChallenge.cellImageUrls.length > 0) {
-            debugLog('[CaptchaFlux] Canvas tainted, fetching', activeChallenge.cellImageUrls.length, 'cell images from service worker');
-            try {
-              screenshotB64 = await fetchAndCompositeCellImages(activeChallenge.cellImageUrls, activeChallenge.gridSize);
-              if (screenshotB64) {
-                debugLog('[CaptchaFlux] Composited grid from fetched cells:', screenshotB64.length, 'chars');
-              }
-            } catch (e) {
-              debugLog('[CaptchaFlux] Cell image fetch failed:', e.message);
-            }
-          }
-
-          // Priority 3: Fall back to cropped tab screenshot (hide modal first)
+          // Priority 2: Fall back to cropped tab screenshot (hide modal first)
           if (!screenshotB64) {
             debugLog('[CaptchaFlux] All grid extraction failed, using cropped tab screenshot');
 
