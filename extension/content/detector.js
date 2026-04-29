@@ -400,21 +400,24 @@
       case "recaptcha_v3": {
         const textarea = document.querySelector("#g-recaptcha-response");
         if (textarea) {
-          textarea.value = token;
+          const ns = Object.getOwnPropertyDescriptor(
+            HTMLTextAreaElement.prototype, 'value'
+          )?.set;
+          if (ns) ns.call(textarea, token);
+          else textarea.value = token;
           textarea.style.display = "none";
+          textarea.dispatchEvent(new Event("input", { bubbles: true }));
+          textarea.dispatchEvent(new Event("change", { bubbles: true }));
           // Trigger callback
           const callback = document.querySelector(".g-recaptcha");
           if (callback) {
             const cbName = callback.getAttribute("data-callback");
             if (cbName && typeof window[cbName] === "function") {
-              window[cbName](token);
+              try { window[cbName](token); } catch {}
             }
           }
-          // Also try grecaptcha callback
           try {
-            if (window.grecaptcha) {
-              window.grecaptcha.execute?.();
-            }
+            if (window.grecaptcha) window.grecaptcha.execute?.();
           } catch {}
         }
         break;
@@ -425,8 +428,13 @@
           'textarea[name="h-captcha-response"]'
         );
         if (textarea) {
-          textarea.value = token;
-          // Trigger hcaptcha callback
+          const ns = Object.getOwnPropertyDescriptor(
+            HTMLTextAreaElement.prototype, 'value'
+          )?.set;
+          if (ns) ns.call(textarea, token);
+          else textarea.value = token;
+          textarea.dispatchEvent(new Event("input", { bubbles: true }));
+          textarea.dispatchEvent(new Event("change", { bubbles: true }));
           try {
             if (window.hcaptcha) {
               const iframeEl = document.querySelector(
@@ -446,7 +454,11 @@
           'input[name="cf-turnstile-response"]'
         );
         if (input) {
-          input.value = token;
+          const ns = Object.getOwnPropertyDescriptor(
+            HTMLInputElement.prototype, 'value'
+          )?.set;
+          if (ns) ns.call(input, token);
+          else input.value = token;
           input.dispatchEvent(new Event("input", { bubbles: true }));
           input.dispatchEvent(new Event("change", { bubbles: true }));
         }
@@ -457,17 +469,35 @@
       case "text_image": {
         const inputEl = getCaptchaInputElement();
         if (inputEl) {
-          inputEl.focus();
-          inputEl.value = token;
-          inputEl.dispatchEvent(new Event("input", { bubbles: true }));
-          inputEl.dispatchEvent(new Event("change", { bubbles: true }));
+          const nativeSetter = Object.getOwnPropertyDescriptor(
+            HTMLInputElement.prototype, 'value'
+          )?.set;
 
-          // Also set the hidden verified token if MTCaptcha
-          const hiddenToken = document.querySelector(
-            'input[name="mtcaptcha-verifiedtoken"]'
-          );
-          if (hiddenToken) {
-            hiddenToken.value = token;
+          inputEl.focus();
+          inputEl.click();
+
+          // Clear existing value
+          if (nativeSetter) {
+            nativeSetter.call(inputEl, '');
+          } else {
+            inputEl.value = '';
+          }
+          inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+
+          // Use execCommand for trusted input
+          let worked = false;
+          try {
+            inputEl.select();
+            worked = document.execCommand('insertText', false, token);
+          } catch {}
+
+          if (!worked || inputEl.value !== token) {
+            if (nativeSetter) {
+              nativeSetter.call(inputEl, token);
+            } else {
+              inputEl.value = token;
+            }
+            inputEl.dispatchEvent(new Event('input', { bubbles: true }));
           }
         }
         break;

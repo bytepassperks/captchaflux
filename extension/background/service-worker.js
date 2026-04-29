@@ -5,6 +5,17 @@
 
 const API_BASE = "https://captchaflux.onrender.com";
 
+// Debug log buffer — saved to storage for inspection
+const _debugLogs = [];
+function debugLog(...args) {
+  const msg = args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ');
+  console.log(msg);
+  _debugLogs.push({ t: Date.now(), m: msg });
+  // Keep last 50 entries
+  if (_debugLogs.length > 50) _debugLogs.shift();
+  chrome.storage.local.set({ _cfDebugLogs: _debugLogs });
+}
+
 // Badge states
 const BADGE_STATES = {
   idle: { text: "", color: "#5B8CFF" },
@@ -123,19 +134,25 @@ async function captureTabCaptcha(tabId, rect) {
 
 // Fill captcha answer in all frames (handles cross-origin iframes)
 async function fillCaptchaInAllFrames(tabId, token, captchaType) {
+  debugLog('[CaptchaFlux] fillCaptchaInAllFrames start:', { tabId, token, captchaType });
   try {
-    await chrome.scripting.executeScript({
+    const results = await chrome.scripting.executeScript({
       target: { tabId, allFrames: true },
       func: (tkn, cType) => {
-        // Try filling in every frame — the right frame will have the input
+        const diag = {
+          url: location.href.substring(0, 80),
+          allInputs: document.querySelectorAll("input").length,
+          matched: null,
+          filled: false,
+        };
+
+        // Visible captcha input selectors
         const selectors = [
-          // MTCaptcha mini widget (most specific first)
           "input.mtcap-inputtext-mini",
           "input.mtcap-inputtext",
           ".mtcap-inputbox-mini input",
           ".mtcap-inputbox input",
           'input[class*="mtcap" i]',
-          // Generic captcha selectors
           'input[name*="captcha" i]',
           'input[id*="captcha" i]',
           'input[class*="captcha" i]',
@@ -151,89 +168,112 @@ async function fillCaptchaInAllFrames(tabId, token, captchaType) {
         for (const sel of selectors) {
           const input = document.querySelector(sel);
           if (input && input.type !== "hidden") {
-            // Clear existing value
-            input.value = "";
-            input.focus();
+            diag.matched = sel;
 
-            // Simulate typing character by character for validation
-            for (const char of tkn) {
-              input.value += char;
-              input.dispatchEvent(
-                new KeyboardEvent("keydown", {
-                  key: char,
-                  code: "Key" + char.toUpperCase(),
-                  bubbles: true,
-                })
-              );
-              input.dispatchEvent(
-                new KeyboardEvent("keypress", {
-                  key: char,
-                  code: "Key" + char.toUpperCase(),
-                  bubbles: true,
-                })
-              );
-              input.dispatchEvent(
-                new InputEvent("input", { data: char, bubbles: true })
-              );
-              input.dispatchEvent(
-                new KeyboardEvent("keyup", {
-                  key: char,
-                  code: "Key" + char.toUpperCase(),
-                  bubbles: true,
-                })
-              );
+            // Use native setter to bypass framework watchers
+            const nativeSetter = Object.getOwnPropertyDescriptor(
+              HTMLInputElement.prototype, 'value'
+            )?.set;
+
+            // Focus the input
+            input.focus();
+            input.click();
+
+            // Clear existing value using native setter + select all
+            if (nativeSetter) {
+              nativeSetter.call(input, '');
+            } else {
+              input.value = '';
+            }
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+
+            // Method 1: Try execCommand (creates trusted InputEvents)
+            let execCmdWorked = false;
+            try {
+              input.select();
+              execCmdWorked = document.execCommand('insertText', false, tkn);
+            } catch {}
+
+            if (!execCmdWorked || input.value !== tkn) {
+              // Method 2: Native setter + minimal event chain
+              if (nativeSetter) {
+                nativeSetter.call(input, tkn);
+              } else {
+                input.value = tkn;
+              }
+              input.dispatchEvent(new Event('input', { bubbles: true }));
             }
 
-            input.dispatchEvent(new Event("change", { bubbles: true }));
-            return true;
+            // Do NOT fire blur/change/statusBtn click here — those trigger
+            // server-side validation which clears the input if OCR is wrong.
+            // The text will persist in the input for the user to see.
+            // Validation happens naturally when the form is submitted.
+
+            diag.filled = true;
+            diag.valueAfter = input.value;
+            diag.method = execCmdWorked ? 'execCommand' : 'nativeSetter';
+            return diag;
           }
         }
 
-        // Also handle token-based response fields in the main frame
+        // Token-based response fields (reCAPTCHA, hCaptcha, Turnstile, MTCaptcha verified token)
         const tokenFields = [
-          "#g-recaptcha-response",
-          'textarea[name="g-recaptcha-response"]',
-          'textarea[name="h-captcha-response"]',
-          'input[name="cf-turnstile-response"]',
-          'input[name="mtcaptcha-verifiedtoken"]',
+          { sel: "#g-recaptcha-response", tag: "textarea" },
+          { sel: 'textarea[name="g-recaptcha-response"]', tag: "textarea" },
+          { sel: 'textarea[name="h-captcha-response"]', tag: "textarea" },
+          { sel: 'input[name="cf-turnstile-response"]', tag: "input" },
         ];
-        for (const sel of tokenFields) {
+        for (const { sel } of tokenFields) {
           const field = document.querySelector(sel);
           if (field) {
-            field.value = tkn;
+            const ns = Object.getOwnPropertyDescriptor(
+              field.tagName === "TEXTAREA" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype,
+              'value'
+            )?.set;
+            if (ns) ns.call(field, tkn);
+            else field.value = tkn;
             field.dispatchEvent(new Event("input", { bubbles: true }));
             field.dispatchEvent(new Event("change", { bubbles: true }));
+            diag.matched = sel;
+            diag.filled = true;
           }
         }
 
-        // Try triggering captcha callbacks
+        // Trigger captcha callbacks
         if (cType === "recaptcha_v2" || cType === "recaptcha_v3") {
           const el = document.querySelector(".g-recaptcha");
           if (el) {
             const cbName = el.getAttribute("data-callback");
             if (cbName && typeof window[cbName] === "function") {
-              window[cbName](tkn);
+              try { window[cbName](tkn); } catch {}
             }
           }
           try {
-            if (window.grecaptcha?.enterprise) {
-              // reCAPTCHA Enterprise
-            } else if (window.grecaptcha) {
-              window.grecaptcha.execute?.();
-            }
+            if (window.grecaptcha) window.grecaptcha.execute?.();
           } catch {}
         }
 
-        return false;
+        if (cType === "hcaptcha") {
+          try {
+            if (window.hcaptcha) window.hcaptcha.execute?.();
+          } catch {}
+        }
+
+        return diag;
       },
       args: [token, captchaType],
     });
-  } catch {
-    // executeScript failed — tab may have navigated
+    const fillDiag = results?.map(r => ({ frameId: r.frameId, result: r.result }));
+    debugLog('[CaptchaFlux] executeScript results:', JSON.stringify(fillDiag));
+    chrome.storage.local.set({ _cfFillDiag: fillDiag, _cfFillTime: Date.now() });
+  } catch (e) {
+    debugLog('[CaptchaFlux] executeScript FAILED:', e.message);
+    chrome.storage.local.set({ _cfFillError: e.message, _cfFillTime: Date.now() });
   }
 }
 
 async function solveCaptcha(data, tabId, apiKey) {
+  debugLog('[CaptchaFlux] solveCaptcha called:', { captchaType: data.captchaType, hasImage: !!data.imageBase64, hasImageUrl: !!data.imageUrl, hasRect: !!data.captchaRect, tabId });
   setBadge("solving", tabId);
 
   // Tell content script to show modal
@@ -257,9 +297,11 @@ async function solveCaptcha(data, tabId, apiKey) {
 
     // Build image data from best available source
     let imageBase64 = data.imageBase64;
+    debugLog('[CaptchaFlux] imageBase64 from content:', imageBase64 ? `${imageBase64.length} chars` : 'null');
 
     // Fallback 1: Fetch image URL from background (may get different image for dynamic captchas)
     if (!imageBase64 && data.imageUrl) {
+      debugLog('[CaptchaFlux] Trying imageUrl fetch:', data.imageUrl);
       try {
         const imgResp = await fetch(data.imageUrl);
         const buffer = await imgResp.arrayBuffer();
@@ -269,25 +311,30 @@ async function solveCaptcha(data, tabId, apiKey) {
           binary += String.fromCharCode(bytes[i]);
         }
         imageBase64 = btoa(binary);
-      } catch {
-        // Background fetch failed
+        debugLog('[CaptchaFlux] imageUrl fetch success:', imageBase64.length, 'chars');
+      } catch (e) {
+        debugLog('[CaptchaFlux] imageUrl fetch failed:', e.message);
       }
     }
 
     // Fallback 2: Screenshot visible tab and crop to captcha area
     // This is the most reliable method — captures exactly what user sees
     if (!imageBase64 && data.captchaRect) {
+      debugLog('[CaptchaFlux] Trying tab screenshot, rect:', data.captchaRect);
       try {
         imageBase64 = await captureTabCaptcha(tabId, data.captchaRect);
-      } catch {
-        // Tab capture failed
+        debugLog('[CaptchaFlux] Tab screenshot success:', imageBase64 ? imageBase64.length + ' chars' : 'null');
+      } catch (e) {
+        debugLog('[CaptchaFlux] Tab screenshot failed:', e.message);
       }
     }
 
+    debugLog('[CaptchaFlux] Final image status:', imageBase64 ? `${imageBase64.length} chars` : 'NO IMAGE');
     if (imageBase64) {
       requestBody.captchaImageBase64 = imageBase64;
     }
 
+    debugLog('[CaptchaFlux] Sending to API...');
     const resp = await fetch(`${API_BASE}/api/extension/solve`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -296,6 +343,9 @@ async function solveCaptcha(data, tabId, apiKey) {
 
     const result = await resp.json();
     const solveTime = Date.now() - startTime;
+    debugLog('[CaptchaFlux] API response:', { success: result.success, token: result.token ? result.token.substring(0, 20) + '...' : null, engine: result.engineUsed, error: result.error });
+    // Save API response for debugging
+    chrome.storage.local.set({ _cfApiResp: { success: result.success, token: result.token, engine: result.engineUsed, error: result.error, time: Date.now() } });
 
     if (result.success && result.token) {
       sessionStats.solved++;
@@ -303,7 +353,9 @@ async function solveCaptcha(data, tabId, apiKey) {
       setBadge("solved", tabId);
 
       // Fill the answer in ALL frames (handles cross-origin iframes)
+      debugLog('[CaptchaFlux] Calling fillCaptchaInAllFrames with token:', result.token);
       await fillCaptchaInAllFrames(tabId, result.token, data.captchaType);
+      debugLog('[CaptchaFlux] fillCaptchaInAllFrames completed');
 
       // Also notify content script for modal update
       chrome.tabs.sendMessage(tabId, {
@@ -327,6 +379,7 @@ async function solveCaptcha(data, tabId, apiKey) {
       throw new Error(result.error || "Solve returned no token");
     }
   } catch (err) {
+    debugLog('[CaptchaFlux] solveCaptcha ERROR:', err.message);
     sessionStats.failed++;
     setBadge("error", tabId);
 
