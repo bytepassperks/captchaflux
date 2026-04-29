@@ -391,6 +391,36 @@ async function solveTokenCaptchaClientSide(data, tabId) {
   // Step 3: Check if image challenge appeared (reCAPTCHA/hCaptcha)
   if (cType === 'recaptcha_v2' || cType === 'hcaptcha') {
     debugLog('[CaptchaFlux] Checking for image challenge...');
+
+    // First, get the challenge iframe bounding rect from the main page for cropping
+    let challengeRect = null;
+    try {
+      const rectResults = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: () => {
+          // reCAPTCHA bframe
+          const bframe = document.querySelector('iframe[src*="recaptcha/api2/bframe"], iframe[src*="recaptcha/enterprise/bframe"]');
+          if (bframe) {
+            const r = bframe.getBoundingClientRect();
+            return { x: r.x, y: r.y, width: r.width, height: r.height, dpr: window.devicePixelRatio || 1 };
+          }
+          // hCaptcha challenge frame
+          const hcFrame = document.querySelector('iframe[src*="hcaptcha.com/captcha/challenge"]');
+          if (hcFrame) {
+            const r = hcFrame.getBoundingClientRect();
+            return { x: r.x, y: r.y, width: r.width, height: r.height, dpr: window.devicePixelRatio || 1 };
+          }
+          return null;
+        },
+      });
+      challengeRect = rectResults?.[0]?.result;
+      if (challengeRect) {
+        debugLog('[CaptchaFlux] Challenge iframe rect:', JSON.stringify(challengeRect));
+      }
+    } catch (e) {
+      debugLog('[CaptchaFlux] Could not get challenge rect:', e.message);
+    }
+
     const challengeInfo = await chrome.scripting.executeScript({
       target: { tabId, allFrames: true },
       func: () => {
@@ -465,9 +495,21 @@ async function solveTokenCaptchaClientSide(data, tabId) {
             debugLog('[CaptchaFlux] Round', round + 1, 'challenge:', currentChallenge.prompt, 'grid:', currentChallenge.gridSize);
           }
 
-          // Capture screenshot
-          const screenshotDataUrl = await chrome.tabs.captureVisibleTab(null, { format: 'png' });
-          const screenshotB64 = screenshotDataUrl.split(',')[1];
+          // Capture screenshot and crop to challenge area for better accuracy
+          let screenshotB64;
+          if (challengeRect && challengeRect.width > 50 && challengeRect.height > 50) {
+            debugLog('[CaptchaFlux] Cropping screenshot to challenge iframe area');
+            try {
+              screenshotB64 = await captureTabCaptcha(tabId, challengeRect);
+            } catch (cropErr) {
+              debugLog('[CaptchaFlux] Crop failed, using full screenshot:', cropErr.message);
+              const fullDataUrl = await chrome.tabs.captureVisibleTab(null, { format: 'png' });
+              screenshotB64 = fullDataUrl.split(',')[1];
+            }
+          } else {
+            const fullDataUrl = await chrome.tabs.captureVisibleTab(null, { format: 'png' });
+            screenshotB64 = fullDataUrl.split(',')[1];
+          }
 
           // Send to vision API
           const solveResp = await fetch(`${API_BASE}/api/extension/solve`, {

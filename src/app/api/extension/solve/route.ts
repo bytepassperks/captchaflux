@@ -44,23 +44,23 @@ async function solveImageChallengeWithVision(
     gridMap += `Row ${r}: cells ${cells.join(", ")}\n`;
   }
 
-  const visionPrompt = `You are analyzing a CAPTCHA image challenge screenshot. The screenshot shows a web page with a CAPTCHA popup/overlay containing a ${rows}x${cols} grid of images.
+  const visionPrompt = `You are analyzing a CAPTCHA image challenge. The image shows a CAPTCHA popup with a header/prompt area at the top (blue banner) and a ${rows}x${cols} grid of photographs below it.
 
-The challenge prompt says: "${prompt}"
+The challenge says: "${prompt}"
 
-The grid cells are numbered 0 to ${gridSize - 1}, left to right, top to bottom:
+Grid cell numbering (0-indexed, left-to-right, top-to-bottom):
 ${gridMap}
-Look at the screenshot carefully. Find the image grid popup/overlay. Identify which grid cells contain the requested object.
+Your task: Look at EACH cell in the ${rows}x${cols} grid carefully. Identify which cells contain the object described in the challenge prompt.
 
-IMPORTANT RULES:
-- Only select cells that CLEARLY contain the target object
-- The grid is inside a popup/dialog overlay on the page, not the background
-- Cell numbering starts at 0 (top-left) and goes left-to-right, top-to-bottom
-- Return ONLY a JSON object, no other text
+RULES:
+- Examine each grid cell individually
+- A cell matches if the target object is clearly visible in that cell (even partially)
+- Cell 0 is top-left, cell ${gridSize - 1} is bottom-right
+- The grid area is below the blue header/prompt banner
+- Ignore any UI elements outside the grid (buttons, text, overlays)
+- Return ONLY valid JSON, nothing else
 
-Format: {"indices": [0, 4, 8], "confidence": 0.85}
-
-Return ONLY the JSON, no other text.`;
+{"indices": [0, 4, 8], "confidence": 0.85}`;
 
   // Try PageGrid Claude first
   if (PAGEGRID_API_KEY) {
