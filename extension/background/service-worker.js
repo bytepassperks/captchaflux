@@ -272,6 +272,166 @@ async function fillCaptchaInAllFrames(tabId, token, captchaType) {
   }
 }
 
+// Solve token-based captchas (reCAPTCHA, hCaptcha, Turnstile) by clicking checkbox in user's browser
+async function solveTokenCaptchaClientSide(data, tabId) {
+  const cType = data.captchaType;
+  debugLog('[CaptchaFlux] solveTokenCaptchaClientSide:', cType);
+
+  // Step 1: Click the captcha checkbox inside the iframe
+  const clickResults = await chrome.scripting.executeScript({
+    target: { tabId, allFrames: true },
+    func: (captchaType) => {
+      const url = location.href;
+
+      // reCAPTCHA v2: checkbox is inside recaptcha iframe
+      if (captchaType === 'recaptcha_v2') {
+        const checkbox = document.querySelector('#recaptcha-anchor, .recaptcha-checkbox');
+        if (checkbox) {
+          checkbox.click();
+          return { clicked: true, frame: url, type: 'recaptcha_checkbox' };
+        }
+      }
+
+      // hCaptcha: checkbox inside hcaptcha iframe
+      if (captchaType === 'hcaptcha') {
+        const checkbox = document.querySelector('#checkbox, .check');
+        if (checkbox) {
+          checkbox.click();
+          return { clicked: true, frame: url, type: 'hcaptcha_checkbox' };
+        }
+      }
+
+      // Turnstile: managed widget, click the challenge container
+      if (captchaType === 'turnstile') {
+        const checkbox = document.querySelector('#challenge-stage input[type="checkbox"], .cb-i, input[type="checkbox"]');
+        if (checkbox) {
+          checkbox.click();
+          return { clicked: true, frame: url, type: 'turnstile_checkbox' };
+        }
+        // Try clicking body of turnstile iframe
+        if (url.includes('challenges.cloudflare.com')) {
+          document.body.click();
+          return { clicked: true, frame: url, type: 'turnstile_body' };
+        }
+      }
+
+      return null;
+    },
+    args: [cType],
+  });
+
+  const clickedFrame = clickResults?.find(r => r.result?.clicked);
+  debugLog('[CaptchaFlux] Click result:', JSON.stringify(clickedFrame?.result || 'no frame clicked'));
+
+  if (!clickedFrame?.result?.clicked) {
+    // If no checkbox found, try clicking the widget in the main page
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (captchaType) => {
+        if (captchaType === 'recaptcha_v2') {
+          const iframe = document.querySelector('iframe[src*="recaptcha/api2/anchor"]');
+          if (iframe) iframe.click();
+        }
+        if (captchaType === 'hcaptcha') {
+          const iframe = document.querySelector('iframe[src*="hcaptcha.com/captcha/checkbox"]');
+          if (iframe) iframe.click();
+        }
+        if (captchaType === 'turnstile') {
+          const widget = document.querySelector('.cf-turnstile, iframe[src*="challenges.cloudflare.com"]');
+          if (widget) widget.click();
+        }
+      },
+      args: [cType],
+    });
+  }
+
+  // Step 2: Wait for token to appear (poll for up to 30 seconds)
+  for (let attempt = 0; attempt < 15; attempt++) {
+    await new Promise(r => setTimeout(r, 2000));
+
+    const tokenResults = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (captchaType) => {
+        if (captchaType === 'recaptcha_v2' || captchaType === 'recaptcha_v3') {
+          const ta = document.querySelector('#g-recaptcha-response');
+          if (ta && ta.value && ta.value.length > 20) {
+            return { token: ta.value, source: 'g-recaptcha-response' };
+          }
+        }
+        if (captchaType === 'hcaptcha') {
+          const ta = document.querySelector('textarea[name="h-captcha-response"]');
+          if (ta && ta.value && ta.value.length > 20) {
+            return { token: ta.value, source: 'h-captcha-response' };
+          }
+        }
+        if (captchaType === 'turnstile') {
+          const inp = document.querySelector('input[name="cf-turnstile-response"]');
+          if (inp && inp.value && inp.value.length > 20) {
+            return { token: inp.value, source: 'cf-turnstile-response' };
+          }
+        }
+        // Check for green checkmark (reCAPTCHA solved state)
+        const anchor = document.querySelector('.recaptcha-checkbox-checked, .recaptcha-checkbox[aria-checked="true"]');
+        if (anchor) {
+          // reCAPTCHA solved but token might be in iframe
+          return { solved: true, source: 'checkbox-state' };
+        }
+        return null;
+      },
+      args: [cType],
+    });
+
+    const tokenResult = tokenResults?.[0]?.result;
+    if (tokenResult?.token) {
+      debugLog('[CaptchaFlux] Token found after', (attempt + 1) * 2, 'seconds from', tokenResult.source);
+      return { success: true, token: tokenResult.token, engine: 'client_checkbox' };
+    }
+
+    // Also check inside iframes for the solved state
+    const iframeCheck = await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      func: () => {
+        // Check if reCAPTCHA shows green checkmark
+        const checked = document.querySelector('.recaptcha-checkbox-checked, [aria-checked="true"]#recaptcha-anchor');
+        if (checked) return { solved: true, frame: location.href };
+        // Check hCaptcha solved
+        const hcSolved = document.querySelector('.check.checked, #checkbox[aria-checked="true"]');
+        if (hcSolved) return { solved: true, frame: location.href };
+        return null;
+      },
+    });
+
+    const solvedFrame = iframeCheck?.find(r => r.result?.solved);
+    if (solvedFrame) {
+      // Captcha visually solved, try to get token from main frame
+      debugLog('[CaptchaFlux] Checkbox solved, extracting token...');
+      await new Promise(r => setTimeout(r, 1000));
+      const finalToken = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: () => {
+          const fields = [
+            document.querySelector('#g-recaptcha-response'),
+            document.querySelector('textarea[name="g-recaptcha-response"]'),
+            document.querySelector('textarea[name="h-captcha-response"]'),
+            document.querySelector('input[name="cf-turnstile-response"]'),
+          ];
+          for (const f of fields) {
+            if (f && f.value && f.value.length > 20) return f.value;
+          }
+          return null;
+        },
+      });
+      if (finalToken?.[0]?.result) {
+        return { success: true, token: finalToken[0].result, engine: 'client_checkbox' };
+      }
+    }
+
+    debugLog('[CaptchaFlux] Poll attempt', attempt + 1, '- no token yet');
+  }
+
+  return { success: false, error: 'Captcha checkbox clicked but no token received (may require image challenge)' };
+}
+
 async function solveCaptcha(data, tabId, apiKey) {
   debugLog('[CaptchaFlux] solveCaptcha called:', { captchaType: data.captchaType, hasImage: !!data.imageBase64, hasImageUrl: !!data.imageUrl, hasRect: !!data.captchaRect, tabId });
   setBadge("solving", tabId);
@@ -288,6 +448,39 @@ async function solveCaptcha(data, tabId, apiKey) {
   const startTime = Date.now();
 
   try {
+    // ===== TOKEN-BASED CAPTCHAS: Solve client-side by clicking checkbox =====
+    const tokenCaptchas = ['recaptcha_v2', 'recaptcha_v3', 'hcaptcha', 'turnstile'];
+    if (tokenCaptchas.includes(data.captchaType)) {
+      debugLog('[CaptchaFlux] Token-based captcha — solving client-side');
+      const clientResult = await solveTokenCaptchaClientSide(data, tabId);
+      const solveTime = Date.now() - startTime;
+
+      if (clientResult.success && clientResult.token) {
+        sessionStats.solved++;
+        sessionStats.totalLatency += solveTime;
+        setBadge("solved", tabId);
+
+        chrome.tabs.sendMessage(tabId, {
+          type: "SOLVE_RESULT",
+          data: {
+            success: true,
+            token: clientResult.token,
+            captchaType: data.captchaType,
+            engineUsed: clientResult.engine,
+            solveTimeMs: solveTime,
+            confidence: 0.95,
+          },
+        });
+        updateUsage();
+        setTimeout(() => setBadge("idle", tabId), 5000);
+        return;
+      }
+
+      // Client-side failed — report error accurately
+      throw new Error(clientResult.error || 'Client-side solve failed');
+    }
+
+    // ===== IMAGE-BASED CAPTCHAS: Solve via server-side OCR =====
     const requestBody = {
       apiKey,
       captchaType: data.captchaType,
@@ -300,14 +493,12 @@ async function solveCaptcha(data, tabId, apiKey) {
     debugLog('[CaptchaFlux] imageBase64 from content:', imageBase64 ? `${imageBase64.length} chars` : 'null');
 
     // Priority 1: Extract captcha image directly from inside cross-origin iframe
-    // This gets ONLY the captcha image (not the whole widget) for much better OCR accuracy
     if (!imageBase64) {
       debugLog('[CaptchaFlux] Trying direct iframe image extraction...');
       try {
         const extractResults = await chrome.scripting.executeScript({
           target: { tabId, allFrames: true },
           func: () => {
-            // MTCaptcha: image is a <div> with background-image or hidden <img>
             const imgEl = document.querySelector('img[id*="mtcap-image"]');
             if (imgEl && imgEl.src && imgEl.src.startsWith('data:image')) {
               return { src: imgEl.src, method: 'img-tag' };
@@ -320,7 +511,6 @@ async function solveCaptcha(data, tabId, apiKey) {
                 if (match) return { src: match[1], method: 'bg-image' };
               }
             }
-            // Generic: look for captcha images
             const captchaImgs = document.querySelectorAll('img[src*="captcha"], img[id*="captcha"], img[class*="captcha"]');
             for (const img of captchaImgs) {
               if (img.src) return { src: img.src, method: 'generic-img' };
@@ -333,14 +523,12 @@ async function solveCaptcha(data, tabId, apiKey) {
             const src = frame.result.src;
             debugLog('[CaptchaFlux] Got captcha image from iframe via', frame.result.method);
             if (src.startsWith('data:image')) {
-              // Extract base64 from data URI
               const b64Part = src.split(',')[1];
               if (b64Part) {
                 imageBase64 = b64Part;
                 debugLog('[CaptchaFlux] Extracted image base64:', imageBase64.length, 'chars');
               }
             } else if (src.startsWith('http')) {
-              // Fetch external URL
               try {
                 const imgResp = await fetch(src);
                 const buffer = await imgResp.arrayBuffer();
@@ -405,7 +593,6 @@ async function solveCaptcha(data, tabId, apiKey) {
     const result = await resp.json();
     const solveTime = Date.now() - startTime;
     debugLog('[CaptchaFlux] API response:', { success: result.success, token: result.token ? result.token.substring(0, 20) + '...' : null, engine: result.engineUsed, error: result.error });
-    // Save API response for debugging
     chrome.storage.local.set({ _cfApiResp: { success: result.success, token: result.token, engine: result.engineUsed, error: result.error, time: Date.now() } });
 
     if (result.success && result.token) {
@@ -413,12 +600,10 @@ async function solveCaptcha(data, tabId, apiKey) {
       sessionStats.totalLatency += solveTime;
       setBadge("solved", tabId);
 
-      // Fill the answer in ALL frames (handles cross-origin iframes)
       debugLog('[CaptchaFlux] Calling fillCaptchaInAllFrames with token:', result.token);
       await fillCaptchaInAllFrames(tabId, result.token, data.captchaType);
       debugLog('[CaptchaFlux] fillCaptchaInAllFrames completed');
 
-      // Also notify content script for modal update
       chrome.tabs.sendMessage(tabId, {
         type: "SOLVE_RESULT",
         data: {
@@ -431,10 +616,7 @@ async function solveCaptcha(data, tabId, apiKey) {
         },
       });
 
-      // Update usage
       updateUsage();
-
-      // Reset badge after 5 seconds
       setTimeout(() => setBadge("idle", tabId), 5000);
     } else {
       throw new Error(result.error || "Solve returned no token");
