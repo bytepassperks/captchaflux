@@ -285,13 +285,29 @@
   let scanCount = 0;
 
   async function scan() {
+    // Check if extension context is still valid
+    if (!chrome.runtime?.id) return;
+
     // Check if extension is enabled
-    const settings = await new Promise((resolve) => {
-      chrome.storage.local.get(
-        ["enabled", "apiKey", "authenticated"],
-        resolve
-      );
-    });
+    let settings;
+    try {
+      settings = await new Promise((resolve, reject) => {
+        chrome.storage.local.get(
+          ["enabled", "apiKey", "authenticated"],
+          (result) => {
+            if (chrome.runtime.lastError) {
+              reject(chrome.runtime.lastError);
+            } else {
+              resolve(result);
+            }
+          }
+        );
+      });
+    } catch {
+      // Extension context invalidated — stop scanning
+      clearInterval(scanInterval);
+      return;
+    }
 
     if (!settings.enabled || !settings.apiKey || !settings.authenticated) {
       return;
@@ -339,23 +355,32 @@
       const inputEl = getCaptchaInputElement();
 
       // Notify background
-      chrome.runtime.sendMessage({
-        type: "CAPTCHA_DETECTED",
-        data: {
-          captchaType: detection.type,
-          sitekey: detection.sitekey,
-          pageUrl: window.location.href,
-          confidence: detection.confidence,
-          hasImage: !!imageBase64 || !!imageUrl || !!captchaRect,
-          imageBase64: imageBase64,
-          imageUrl: imageUrl,
-          captchaRect: captchaRect,
-          hasInput: !!inputEl,
-        },
-      });
+      try {
+        chrome.runtime.sendMessage({
+          type: "CAPTCHA_DETECTED",
+          data: {
+            captchaType: detection.type,
+            sitekey: detection.sitekey,
+            pageUrl: window.location.href,
+            confidence: detection.confidence,
+            hasImage: !!imageBase64 || !!imageUrl || !!captchaRect,
+            imageBase64: imageBase64,
+            imageUrl: imageUrl,
+            captchaRect: captchaRect,
+            hasInput: !!inputEl,
+          },
+        });
+      } catch {
+        // Extension context invalidated
+        clearInterval(scanInterval);
+      }
     } else if (!detection && lastDetection) {
       lastDetection = null;
-      chrome.runtime.sendMessage({ type: "CAPTCHA_CLEARED" });
+      try {
+        chrome.runtime.sendMessage({ type: "CAPTCHA_CLEARED" });
+      } catch {
+        clearInterval(scanInterval);
+      }
     }
 
     scanCount++;
@@ -365,7 +390,7 @@
   setTimeout(scan, 1000);
 
   // Re-scan periodically (captchas may load dynamically)
-  setInterval(scan, 3000);
+  const scanInterval = setInterval(scan, 3000);
 
   // Also scan on DOM mutations
   const observer = new MutationObserver(() => {
